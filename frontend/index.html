@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>XDP 带宽监测面板</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+  <script defer type="module" src="app.js"></script>
+</head>
+<body>
+  <header>
+    <h1>XDP 带宽监测</h1>
+    <div id="status">
+      <span id="iface"></span>
+      <span id="window"></span>
+      <span id="tick"></span>
+      <span id="mode"></span>
+      <span id="threshold"></span>
+    </div>
+  </header>
+
+  <main>
+    <section class="chart-card">
+      <canvas id="maxChart"></canvas>
+    </section>
+
+    <section class="alerts-card">
+      <h2>阈值标记窗口</h2>
+      <ul id="alertList"></ul>
+    </section>
+
+    <section class="table-card">
+      <h2>最近 72 小时 (3 分钟粒度)</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>标记</th>
+            <th>开始时间</th>
+            <th>结束时间</th>
+            <th>最大带宽</th>
+            <th>采样数</th>
+          </tr>
+        </thead>
+        <tbody id="bucketTable"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <footer>
+    <p>数据来源：XDP 10ms Tick → 3 分钟窗口 max。</p>
+  </footer>
+</body>
+</html>

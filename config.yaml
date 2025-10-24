@@ -1,0 +1,16 @@
+xdp:
+  interface: enp39s0
+  tick_ms: 10          # 采样间隔（毫秒）
+  mode: auto           # auto / drv / skb
+
+aggregation:
+  window_seconds: 180  # 每个统计桶 3 分钟
+  history_hours: 72    # 保存最近 72 小时
+
+backend:
+  host: 0.0.0.0
+  port: 8000
+
+frontend:
+  refresh_interval_ms: 5000
+  alert_threshold: 100M

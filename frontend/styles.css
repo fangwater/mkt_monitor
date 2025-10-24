@@ -1,0 +1,140 @@
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI", Arial, sans-serif;
+  background-color: #101418;
+  color: #edf1f7;
+}
+
+body {
+  margin: 0;
+  padding: 0 1.5rem 2rem;
+}
+
+header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1.5rem 0;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 1.8rem;
+  font-weight: 600;
+}
+
+#status {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  font-size: 0.95rem;
+  color: #9aa6b2;
+}
+
+main {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.chart-card,
+.table-card,
+.alerts-card {
+  background: rgba(32, 40, 48, 0.8);
+  border-radius: 12px;
+  padding: 1.2rem;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.2);
+}
+
+.table-card h2 {
+  margin-top: 0;
+  font-weight: 500;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+  font-size: 0.92rem;
+}
+
+th, td {
+  padding: 0.6rem 0.8rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+}
+
+th {
+  text-align: left;
+  color: #9aa6b2;
+  font-weight: 500;
+}
+
+tr:hover {
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.threshold-hit {
+  background: rgba(248, 113, 113, 0.12);
+}
+
+tr.threshold-hit:hover {
+  background: rgba(248, 113, 113, 0.18);
+}
+
+.mark-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(248, 113, 113, 0.2);
+  color: #fda4af;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.alerts-card h2 {
+  margin: 0;
+  font-weight: 500;
+}
+
+#alertList {
+  list-style: none;
+  margin: 0.8rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  font-size: 0.9rem;
+}
+
+#alertList li {
+  padding: 0.6rem 0.8rem;
+  background: rgba(248, 113, 113, 0.08);
+  border-left: 3px solid #f87171;
+  border-radius: 8px;
+  color: #fcd34d;
+}
+
+#alertList li strong {
+  color: #fda4af;
+}
+
+#alertList li.empty {
+  background: transparent;
+  border: none;
+  color: #707a86;
+  padding-left: 0;
+}
+
+footer {
+  margin-top: 2rem;
+  font-size: 0.85rem;
+  color: #707a86;
+}
+
+@media (max-width: 768px) {
+  body {
+    padding: 0 1rem 2rem;
+  }
+}

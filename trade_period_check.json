@@ -1,0 +1,8 @@
+{
+    "period":123456789,
+    "passed":true,
+    "symbol":["BTCUSD","ETHUSD"],
+    "kline_bar_tp":17121312, //交易所标准时间
+    "trade_bar_tp":17121315, //行情验算时间(机器tp)，可以返推行情延迟
+    "std_err_turnover:"[] //标准差误差,和turnover比较, 可以判断哪些币出现问题
+}
