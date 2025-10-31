@@ -2,107 +2,122 @@ from __future__ import annotations
 
 import pathlib
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, Iterable
 
 import yaml
 
 
 @dataclass(frozen=True)
-class XDPSettings:
-    interface: str
-    tick_ms: float
-    mode: str
+class ServerSettings:
+    host: str = "0.0.0.0"
+    port: int = 8000
 
 
 @dataclass(frozen=True)
-class AggregationSettings:
-    window_seconds: int
-    history_hours: int
+class RetentionSettings:
+    xdp_points: int = 72
+    integrity_points: int = 72
 
-    @property
-    def history_buckets(self) -> int:
-        return int((self.history_hours * 3600) / self.window_seconds)
-
-
-@dataclass(frozen=True)
-class BackendSettings:
-    host: str
-    port: int
+    def __post_init__(self) -> None:
+        if self.xdp_points <= 0:
+            raise ValueError("xdp_points 必须为正整数")
+        if self.integrity_points <= 0:
+            raise ValueError("integrity_points 必须为正整数")
 
 
 @dataclass(frozen=True)
-class FrontendSettings:
-    refresh_interval_ms: int
-    alert_threshold_bps: int
+class ZMQStreamConfig:
+    name: str
+    endpoint: str
+    topic: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.endpoint:
+            raise ValueError(f"流 {self.name!r} 的 endpoint 不能为空")
+        object.__setattr__(self, "topic", str(self.topic or ""))
 
 
 @dataclass(frozen=True)
 class AppConfig:
-    xdp: XDPSettings
-    aggregation: AggregationSettings
-    backend: BackendSettings
-    frontend: FrontendSettings
+    server: ServerSettings
+    retention: RetentionSettings
+    xdp_streams: Tuple[ZMQStreamConfig, ...]
+    integrity_streams: Tuple[ZMQStreamConfig, ...]
 
 
-def parse_threshold(value: Any) -> int:
+def _ensure_dict(root: Dict[str, Any], key: str) -> Dict[str, Any]:
+    value = root.get(key, {})
     if value is None:
-        return 0
-    if isinstance(value, (int, float)):
-        return int(value)
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return 0
-        suffix = text[-1].upper()
-        multipliers = {"K": 10**3, "M": 10**6, "G": 10**9, "T": 10**12}
-        if suffix in multipliers:
-            number_part = text[:-1].strip()
-            try:
-                base = float(number_part)
-            except ValueError as err:
-                raise ValueError(f"无法解析阈值 {value!r}") from err
-            return int(base * multipliers[suffix])
-        try:
-            return int(float(text))
-        except ValueError as err:
-            raise ValueError(f"无法解析阈值 {value!r}") from err
-    raise ValueError(f"无法解析阈值类型: {type(value).__name__}")
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{key} 配置必须是对象")
+    return value
+
+
+def _ensure_list(root: Dict[str, Any], key: str) -> Iterable[Dict[str, Any]]:
+    value = root.get(key, [])
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ValueError(f"{key} 配置必须是列表")
+    return value
+
+
+def _parse_streams(items: Iterable[Dict[str, Any]], *, fallback_topic: str) -> Tuple[ZMQStreamConfig, ...]:
+    streams = []
+    for pos, raw_item in enumerate(items):
+        if not isinstance(raw_item, dict):
+            raise ValueError(f"第 {pos} 个流配置不是对象")
+        name = str(raw_item.get("name") or f"stream-{pos}")
+        endpoint = raw_item.get("endpoint")
+        if not endpoint or not isinstance(endpoint, str):
+            raise ValueError(f"{name} 缺少 endpoint")
+        topic = raw_item.get("topic")
+        if topic is None:
+            topic = fallback_topic
+        if not isinstance(topic, str):
+            raise ValueError(f"{name} 的 topic 必须是字符串")
+        streams.append(ZMQStreamConfig(name=name, endpoint=endpoint, topic=topic))
+    return tuple(streams)
 
 
 def load_config(path: str | pathlib.Path) -> AppConfig:
-    with open(path, "r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
+    with open(path, "r", encoding="utf-8") as fh:
+        raw = yaml.safe_load(fh)
 
     if not isinstance(raw, dict):
-        raise ValueError("配置文件格式不正确")
+        raise ValueError("配置文件必须是对象")
 
-    def require(section: str) -> Dict[str, Any]:
-        value = raw.get(section)
-        if not isinstance(value, dict):
-            raise ValueError(f"配置项 {section} 缺失或格式错误")
-        return value
+    server_cfg = _ensure_dict(raw, "server")
+    retention_cfg = _ensure_dict(raw, "retention")
 
-    xdp_raw = require("xdp")
-    agg_raw = require("aggregation")
-    backend_raw = require("backend")
-    frontend_raw = require("frontend")
+    fallback_xdp_topic = ""
+    fallback_integrity_topic = "integrity_trade"
+
+    xdp_items = _ensure_list(raw, "xdp_streams")
+    integrity_items = _ensure_list(raw, "integrity_streams")
+
+    if not xdp_items:
+        raise ValueError("至少配置一个 xdp_streams")
+    if not integrity_items:
+        raise ValueError("至少配置一个 integrity_streams")
+
+    server = ServerSettings(
+        host=str(server_cfg.get("host", "0.0.0.0")),
+        port=int(server_cfg.get("port", 8000)),
+    )
+
+    retention = RetentionSettings(
+        xdp_points=int(retention_cfg.get("xdp_points", 72)),
+        integrity_points=int(retention_cfg.get("integrity_points", 72)),
+    )
+
+    xdp_streams = _parse_streams(xdp_items, fallback_topic=fallback_xdp_topic)
+    integrity_streams = _parse_streams(integrity_items, fallback_topic=fallback_integrity_topic)
 
     return AppConfig(
-        xdp=XDPSettings(
-            interface=str(xdp_raw.get("interface", "")),
-            tick_ms=float(xdp_raw.get("tick_ms", 10)),
-            mode=str(xdp_raw.get("mode", "auto")),
-        ),
-        aggregation=AggregationSettings(
-            window_seconds=int(agg_raw.get("window_seconds", 180)),
-            history_hours=int(agg_raw.get("history_hours", 72)),
-        ),
-        backend=BackendSettings(
-            host=str(backend_raw.get("host", "0.0.0.0")),
-            port=int(backend_raw.get("port", 8000)),
-        ),
-        frontend=FrontendSettings(
-            refresh_interval_ms=int(frontend_raw.get("refresh_interval_ms", 5000)),
-            alert_threshold_bps=parse_threshold(frontend_raw.get("alert_threshold")),
-        ),
+        server=server,
+        retention=retention,
+        xdp_streams=xdp_streams,
+        integrity_streams=integrity_streams,
     )

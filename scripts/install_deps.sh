@@ -15,6 +15,7 @@ install_debian() {
   apt-get install -y \
     bpfcc-tools \
     python3-bpfcc \
+    python3-zmq \
     linux-headers-"$(uname -r)" \
     clang \
     llvm \
@@ -35,6 +36,7 @@ install_fedora() {
   dnf install -y \
     bcc \
     python3-bcc \
+    python3-zmq \
     kernel-devel-"$(uname -r)" \
     clang \
     llvm \

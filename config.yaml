@@ -1,16 +1,17 @@
-xdp:
-  interface: enp39s0
-  tick_ms: 10          # 采样间隔（毫秒）
-  mode: auto           # auto / drv / skb
-
-aggregation:
-  window_seconds: 180  # 每个统计桶 3 分钟
-  history_hours: 72    # 保存最近 72 小时
-
-backend:
+server:
   host: 0.0.0.0
-  port: 8000
+  port: 12345
 
-frontend:
-  refresh_interval_ms: 5000
-  alert_threshold: 100M
+retention:
+  xdp_points: 72
+  integrity_points: 72
+
+xdp_streams:
+  - name: primary-xdp
+    endpoint: tcp://103.90.136.195:16666
+    topic: ""
+
+integrity_streams:
+  - name: primary-integrity_trade
+    endpoint: tcp://103.90.136.195:15555
+    topic: integrity_trade

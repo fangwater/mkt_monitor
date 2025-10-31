@@ -1,0 +1,10 @@
+# XDP 监控配置（部署时会复制到远端并重命名为 xdp_cfg.yaml）
+xdp:
+  interface: ens18         # 需根据实际服务器调整
+  tick_ms: 10
+  mode: auto               # auto / drv / skb
+
+zmq:
+  host: 0.0.0.0            # 采样进程绑定的地址（默认监听所有网卡）
+  send_port: 16666         # 发布端口，需与订阅端一致
+  push_interval_sec: 5     # 聚合后推送的时间窗口（秒）

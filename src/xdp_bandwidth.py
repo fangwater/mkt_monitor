@@ -23,9 +23,26 @@ import socket
 import sys
 import time
 from dataclasses import dataclass, asdict
-from typing import Generator, Optional, Tuple
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from bcc import BPF
+
+try:
+    XDP_FLAGS_UPDATE_IF_NOEXIST = BPF.XDP_FLAGS_UPDATE_IF_NOEXIST  # type: ignore[attr-defined]
+except AttributeError:
+    XDP_FLAGS_UPDATE_IF_NOEXIST = 1 << 0
+
+try:
+    XDP_FLAGS_SKB_MODE = BPF.XDP_FLAGS_SKB_MODE  # type: ignore[attr-defined]
+except AttributeError:
+    XDP_FLAGS_SKB_MODE = 1 << 1
+
+try:
+    XDP_FLAGS_DRV_MODE = BPF.XDP_FLAGS_DRV_MODE  # type: ignore[attr-defined]
+except AttributeError:
+    XDP_FLAGS_DRV_MODE = 1 << 2
 
 XDP_PROGRAM = r"""
 #include <uapi/linux/bpf.h>
@@ -76,6 +93,57 @@ class Sample:
     pps: float
 
 
+class ZMQPublisher:
+    """简单的 ZeroMQ PUSH 发布封装。"""
+
+    def __init__(self, endpoint: str, pattern: str = "push", bind: bool = False) -> None:
+        try:
+            import zmq  # type: ignore[import]
+        except ImportError as exc:
+            raise SystemExit("缺少 pyzmq 依赖，请先安装: pip install pyzmq") from exc
+
+        self._endpoint = endpoint
+        self._ctx = zmq.Context.instance()
+        pattern = pattern.lower()
+        if pattern == "push":
+            socket_type = zmq.PUSH
+        elif pattern == "pub":
+            socket_type = zmq.PUB
+        else:
+            raise SystemExit(f"不支持的 zmq pattern: {pattern}")
+        self._pattern = pattern
+        self._bind = bind
+        self._socket = self._ctx.socket(socket_type)
+        if bind:
+            self._socket.bind(endpoint)
+        else:
+            self._socket.connect(endpoint)
+
+    @property
+    def endpoint(self) -> str:
+        return self._endpoint
+
+    @property
+    def pattern(self) -> str:
+        return self._pattern
+
+    @property
+    def bind(self) -> bool:
+        return self._bind
+
+    def send(self, payload: Dict[str, Any]) -> None:
+        try:
+            self._socket.send_json(payload, ensure_ascii=False)
+        except Exception as exc:  # noqa: BLE001
+            print(f"ZMQ 发送失败 ({self._endpoint}): {exc}", file=sys.stderr)
+
+    def close(self) -> None:
+        try:
+            self._socket.close(0)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def ensure_memlock_limit() -> None:
     """将 MEMLOCK 调整到无限制，避免 bcc 抛出权限错误。"""
     try:
@@ -115,6 +183,20 @@ def format_rate(bps: float) -> str:
             return f"{value:7.2f}{unit}"
         value /= 1000.0
     return f"{value:7.2f}Pbps"
+
+
+def iso_timestamp(ts: float) -> str:
+    """将时间戳格式化为 ISO8601 字符串（UTC）。"""
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+def parse_bool(value: Any) -> bool:
+    """将布尔或字符串解析为 bool。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    raise ValueError("expect bool or string")
 
 
 class XDPBandwidthMonitor:
@@ -167,10 +249,10 @@ class XDPBandwidthMonitor:
 
         chosen = None
         if self.mode in {"auto", "drv"}:
-            flags = BPF.XDP_FLAGS_DRV_MODE | BPF.XDP_FLAGS_UPDATE_IF_NOEXIST
+            flags = XDP_FLAGS_DRV_MODE | XDP_FLAGS_UPDATE_IF_NOEXIST
             chosen = attach(flags)
         if chosen is None and self.mode in {"auto", "skb"}:
-            flags = BPF.XDP_FLAGS_SKB_MODE | BPF.XDP_FLAGS_UPDATE_IF_NOEXIST
+            flags = XDP_FLAGS_SKB_MODE | XDP_FLAGS_UPDATE_IF_NOEXIST
             chosen = attach(flags)
 
         if chosen is None:
@@ -224,28 +306,61 @@ class XDPBandwidthMonitor:
             yield self.sample()
 
 
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().with_name("xdp_cfg.yaml")
+
+
+def load_config(config_path: Optional[str]) -> Dict[str, Any]:
+    """加载 YAML 配置，如果不存在则返回空 dict。"""
+    if config_path:
+        path = Path(config_path).expanduser()
+    else:
+        path = DEFAULT_CONFIG_PATH
+
+    if not path.exists():
+        if config_path:
+            raise SystemExit(f"指定的配置文件不存在: {path}")
+        return {}
+
+    try:
+        import yaml  # type: ignore[import]
+    except ImportError as exc:  # pragma: no cover - 运行环境问题
+        raise SystemExit("缺少 PyYAML 依赖，请先安装: pip install pyyaml") from exc
+
+    with path.open("r", encoding="utf-8") as fh:
+        data = yaml.safe_load(fh) or {}
+
+    if not isinstance(data, dict):
+        raise SystemExit("配置文件格式错误：顶层应为 key/value 结构")
+
+    return data
+
+
 def run_cli() -> None:
-    parser = argparse.ArgumentParser(description="XDP 小窗口带宽监测")
-    parser.add_argument("-f", "--iface", required=True, help="目标网卡名称")
+    parser = argparse.ArgumentParser(description="XDP 小窗口带宽监测 (支持读取 xdp_cfg.yaml)")
+    parser.add_argument(
+        "-f",
+        "--iface",
+        help="目标网卡名称（若未提供将尝试读取配置文件 xdp.interface）",
+    )
     parser.add_argument(
         "-i",
         "--interval",
         type=float,
-        default=0.05,
-        help="采样间隔（秒），默认 0.05 即 50ms",
+        default=None,
+        help="采样间隔（秒），默认读取配置 xdp.tick_ms（毫秒），否则 0.05",
     )
     parser.add_argument(
         "-d",
         "--duration",
         type=float,
-        default=0.0,
-        help="运行总时长（秒，0 表示一直运行）",
+        default=None,
+        help="运行总时长（秒，默认 0 表示一直运行）",
     )
     parser.add_argument(
         "--mode",
         choices=["auto", "drv", "skb"],
-        default="auto",
-        help="XDP 挂载模式，默认 auto（先尝试 driver，再回退 skb）",
+        default=None,
+        help="XDP 挂载模式，默认读取配置 xdp.mode 或 auto",
     )
     parser.add_argument(
         "--json",
@@ -257,10 +372,78 @@ def run_cli() -> None:
         action="store_true",
         help="开启 BPF 编译日志",
     )
+    parser.add_argument(
+        "--config",
+        help=f"配置文件路径，默认 {DEFAULT_CONFIG_PATH}",
+    )
 
     args = parser.parse_args()
-    if args.duration < 0:
+
+    cfg = load_config(args.config)
+    xdp_section = cfg.get("xdp", {})
+    cfg_xdp = xdp_section if isinstance(xdp_section, dict) else {}
+    zmq_section = cfg.get("zmq", {})
+    cfg_zmq = zmq_section if isinstance(zmq_section, dict) else {}
+
+    iface = args.iface or cfg_xdp.get("interface")
+    if not iface:
+        raise SystemExit("未指定网卡。请通过 -f/--iface 或配置文件 xdp.interface 指定。")
+
+    interval = args.interval
+    if interval is None:
+        tick_ms = cfg_xdp.get("tick_ms")
+        if tick_ms is not None:
+            try:
+                interval = float(tick_ms) / 1000.0
+            except (TypeError, ValueError):
+                raise SystemExit("配置 xdp.tick_ms 必须为数字")
+    if interval is None:
+        interval = 0.05
+    if interval <= 0:
+        raise SystemExit("采样间隔必须大于 0")
+
+    mode = args.mode or cfg_xdp.get("mode") or "auto"
+    if mode not in {"auto", "drv", "skb"}:
+        raise SystemExit("配置 xdp.mode 仅支持 auto/drv/skb")
+
+    duration = args.duration
+    if duration is None:
+        duration = cfg_xdp.get("duration_seconds", 0.0)
+    try:
+        duration = float(duration)
+    except (TypeError, ValueError):
+        raise SystemExit("运行时长必须为数字")
+    if duration < 0:
         raise SystemExit("运行时长不能为负数")
+
+    push_interval = cfg_zmq.get("push_interval_sec", 5)
+    try:
+        push_interval = float(push_interval)
+    except (TypeError, ValueError):
+        raise SystemExit("配置 zmq.push_interval_sec 必须为数字")
+    if push_interval < 0:
+        raise SystemExit("配置 zmq.push_interval_sec 不能为负数")
+
+    port = cfg_zmq.get("send_port")
+    if port is None:
+        publisher = None
+    else:
+        try:
+            port_int = int(port)
+        except (TypeError, ValueError):
+            raise SystemExit("配置 zmq.send_port 必须为整数")
+
+        host = cfg_zmq.get("host", "0.0.0.0")
+        endpoint = f"tcp://{host}:{port_int}"
+        pattern = "pub"
+        publisher = ZMQPublisher(endpoint, pattern=pattern, bind=True)
+
+    if publisher is not None:
+        action = "绑定" if publisher.bind else "连接"
+        print(f"ZeroMQ {publisher.pattern.upper()} 已{action}: {publisher.endpoint}")
+
+    debug_bpf = args.debug_bpf
+    output_json = args.json
 
     stop_flag = {"stop": False}
 
@@ -270,25 +453,108 @@ def run_cli() -> None:
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
-    with XDPBandwidthMonitor(args.iface, args.interval, args.mode, args.debug_bpf) as monitor:
-        start = time.time()
-        print(f"已在 {args.iface} 挂载 XDP 程序，按 Ctrl+C 结束。")
-        for sample in monitor.stream():
-            if stop_flag["stop"]:
-                break
+    hostname = socket.gethostname()
+    aggregator_samples: List[Sample] = []
+    last_push_wall = time.time()
 
-            if args.json:
-                print(json.dumps(asdict(sample), ensure_ascii=False))
-            else:
-                timestamp = time.strftime("%H:%M:%S", time.localtime(sample.timestamp))
-                print(
-                    f"{timestamp} | interval={sample.interval*1000:.1f}ms "
-                    f"bytes={sample.bytes:10d} packets={sample.packets:8d} "
-                    f"rate={format_rate(sample.bps)} pps={sample.pps:10.0f}"
-                )
+    def maybe_emit(force: bool = False) -> None:
+        nonlocal aggregator_samples, last_push_wall
+        if publisher is None or not aggregator_samples:
+            if force:
+                aggregator_samples.clear()
+            return
 
-            if args.duration and (time.time() - start) >= args.duration:
-                break
+        now_wall = time.time()
+        if not force and push_interval > 0 and (now_wall - last_push_wall) < push_interval:
+            return
+
+        total_samples = len(aggregator_samples)
+        total_bytes = sum(s.bytes for s in aggregator_samples)
+        total_packets = sum(s.packets for s in aggregator_samples)
+        sum_bps = sum(s.bps for s in aggregator_samples)
+        sum_pps = sum(s.pps for s in aggregator_samples)
+        max_bps = max(s.bps for s in aggregator_samples)
+        max_pps = max(s.pps for s in aggregator_samples)
+        window_start = aggregator_samples[0].timestamp
+        window_end = aggregator_samples[-1].timestamp
+        window_duration = max(window_end - window_start, aggregator_samples[-1].interval)
+
+        payload = {
+            "hostname": hostname,
+            "interface": iface,
+            "mode": mode,
+            "window": {
+                "start": window_start,
+                "end": window_end,
+                "duration": window_duration,
+                "start_iso": iso_timestamp(window_start),
+                "end_iso": iso_timestamp(window_end),
+            },
+            "samples": total_samples,
+            "metrics": {
+                "bps_avg": sum_bps / total_samples if total_samples else 0.0,
+                "bps_max": max_bps,
+                "pps_avg": sum_pps / total_samples if total_samples else 0.0,
+                "pps_max": max_pps,
+                "bytes_total": total_bytes,
+                "packets_total": total_packets,
+            },
+            "timestamp": now_wall,
+            "timestamp_iso": iso_timestamp(now_wall),
+            "config": {
+                "sample_interval_sec": interval,
+                "push_interval_sec": push_interval,
+                "endpoint": publisher.endpoint,
+                "pattern": publisher.pattern,
+                "bind": publisher.bind,
+            },
+        }
+
+        publisher.send(payload)
+        avg_bps = sum_bps / total_samples if total_samples else 0.0
+        avg_pps = sum_pps / total_samples if total_samples else 0.0
+        print(
+            f"[{time.strftime('%H:%M:%S')}] 推送 {total_samples} 样本，窗口 {window_duration:.2f}s "
+            f"avg={format_rate(avg_bps)} max={format_rate(max_bps)} "
+            f"avg_pps={avg_pps:,.0f} max_pps={max_pps:,.0f} -> {publisher.endpoint}"
+        )
+        sys.stdout.flush()
+        aggregator_samples = []
+        last_push_wall = now_wall
+
+    try:
+        with XDPBandwidthMonitor(iface, interval, mode, debug_bpf) as monitor:
+            start = time.time()
+            print(f"已在 {iface} 挂载 XDP 程序，按 Ctrl+C 结束。")
+            for sample in monitor.stream():
+                if stop_flag["stop"]:
+                    if publisher is not None:
+                        aggregator_samples.append(sample)
+                        maybe_emit(force=True)
+                    break
+
+                if publisher is not None:
+                    aggregator_samples.append(sample)
+                    maybe_emit()
+                else:
+                    if output_json:
+                        print(json.dumps(asdict(sample), ensure_ascii=False))
+                    else:
+                        timestamp = time.strftime("%H:%M:%S", time.localtime(sample.timestamp))
+                        print(
+                            f"{timestamp} | interval={sample.interval*1000:.1f}ms "
+                            f"bytes={sample.bytes:10d} packets={sample.packets:8d} "
+                            f"rate={format_rate(sample.bps)} pps={sample.pps:10.0f}"
+                        )
+
+                if duration and (time.time() - start) >= duration:
+                    if publisher is not None:
+                        maybe_emit(force=True)
+                    break
+    finally:
+        maybe_emit(force=True)
+        if publisher is not None:
+            publisher.close()
 
 
 if __name__ == "__main__":

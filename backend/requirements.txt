@@ -1,4 +1,4 @@
 fastapi==0.112.0
 uvicorn[standard]==0.30.6
 PyYAML==6.0.2
-
+pyzmq==26.2.0
