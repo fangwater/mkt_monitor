@@ -94,7 +94,7 @@ let integrityStreamColorIndex = 0;
 const integrityStreamLabels = new Map();
 const TRADE_CATEGORY_PREFIX = 'trade/';
 const DEFAULT_TRADE_CATEGORY = `${TRADE_CATEGORY_PREFIX}default`;
-const APP_VERSION = '20251101-8';
+const APP_VERSION = '20251102-1';
 
 console.info(`[Integrity] bundle ${APP_VERSION}`);
 
@@ -134,6 +134,36 @@ function formatThresholdText(bps) {
     return '阈值: 未设置';
   }
   return `阈值: ${formatBps(bps)}`;
+}
+
+function isNil(value) {
+  return value === undefined || value === null;
+}
+
+function valueOr(value, fallback) {
+  return isNil(value) ? fallback : value;
+}
+
+function firstDefined(...values) {
+  for (let idx = 0; idx < values.length; idx += 1) {
+    const value = values[idx];
+    if (!isNil(value)) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function getNested(source, path, fallback) {
+  let cursor = source;
+  for (let idx = 0; idx < path.length; idx += 1) {
+    if (cursor === undefined || cursor === null) {
+      return fallback;
+    }
+    const key = path[idx];
+    cursor = cursor[key];
+  }
+  return isNil(cursor) ? fallback : cursor;
 }
 
 function toLocal(ts) {
@@ -203,11 +233,12 @@ function clamp(value, min, max) {
 
 function getIntegrityYPosition(category, isOk, streamKey) {
   const normalized = typeof category === 'string' ? category : '';
-  const base =
-    INTEGRITY_CATEGORY_LEVELS[normalized]
-    ?? (normalized.startsWith(TRADE_CATEGORY_PREFIX)
-      ? INTEGRITY_CATEGORY_LEVELS[DEFAULT_TRADE_CATEGORY]
-      : INTEGRITY_CATEGORY_LEVELS.default);
+  const baseValue = INTEGRITY_CATEGORY_LEVELS[normalized];
+  const base = !isNil(baseValue)
+    ? baseValue
+    : (normalized.startsWith(TRADE_CATEGORY_PREFIX)
+        ? INTEGRITY_CATEGORY_LEVELS[DEFAULT_TRADE_CATEGORY]
+        : INTEGRITY_CATEGORY_LEVELS.default);
   let offset = isOk ? 0.07 : -0.07;
   if (isTradeCategory(normalized)) {
     offset += computeStreamJitter(streamKey, 0.16);
@@ -219,11 +250,11 @@ function resolveIntegrityStream(event) {
   if (!event) {
     return null;
   }
-  const typeRaw = event.type ?? event.stream_category;
+  const typeRaw = !isNil(event.type) ? event.type : event.stream_category;
   const type = String(typeRaw || '').toLowerCase();
   const exchange = String(event.exchange || '').trim();
   const symbol = String(event.symbol || '').trim().toUpperCase();
-  const stageValue = event.stage ?? event.stream_stage;
+  const stageValue = !isNil(event.stage) ? event.stage : event.stream_stage;
   const stage = String(stageValue || '').trim();
   const hostname = String(event.hostname || '').trim();
   const iface = String(event.interface || '').trim();
@@ -319,11 +350,11 @@ function ensureStreamVisibility() {
 }
 
 function formatIntegrityStatusLabel(event, stream, { includeSymbol = false } = {}) {
-  const baseLabel = stream?.label || '';
-  const type = String(event?.type || '').toLowerCase();
-  const exchange = String(event?.exchange || '').trim();
-  const stage = String(event?.stage || '').trim();
-  const symbol = String(event?.symbol || '').trim().toUpperCase();
+  const baseLabel = stream && stream.label ? stream.label : '';
+  const type = String((event && event.type) || '').toLowerCase();
+  const exchange = String((event && event.exchange) || '').trim();
+  const stage = String((event && event.stage) || '').trim();
+  const symbol = String((event && event.symbol) || '').trim().toUpperCase();
 
   if (baseLabel) {
     if (includeSymbol || !symbol) {
@@ -411,23 +442,23 @@ function buildIntegrityDetailSegments(event) {
   if (failedRequests.length) {
     segments.push(`失败请求: ${failedRequests.join(', ')}`);
   }
-  const failedCount = Number(event?.failed_request_count) || failedRequests.length;
+  const failedCount = Number(event && event.failed_request_count) || failedRequests.length;
   const totalCount =
-    Number(event?.request_count)
-    || (Array.isArray(event?.requests) ? event.requests.length : 0)
-    || (Array.isArray(event?.results)
+    Number(event && event.request_count)
+    || (Array.isArray(event && event.requests) ? event.requests.length : 0)
+    || (Array.isArray(event && event.results)
       ? event.results.reduce(
-          (acc, item) => acc + (Array.isArray(item?.requests) ? item.requests.length : 0),
+          (acc, item) => acc + (Array.isArray(item && item.requests) ? item.requests.length : 0),
           0,
         )
       : 0);
   if (totalCount > 0 && failedCount > 0) {
     segments.push(`请求失败 ${failedCount}/${totalCount}`);
   }
-  const failedSymbols = Array.isArray(event?.failed_symbols)
+  const failedSymbols = Array.isArray(event && event.failed_symbols)
     ? event.failed_symbols.map((item) => String(item || '').trim()).filter((item) => item.length > 0)
     : [];
-  if (!failedSymbols.length && Array.isArray(event?.results)) {
+  if (!failedSymbols.length && Array.isArray(event && event.results)) {
     event.results.forEach((result) => {
       if (!result || typeof result !== 'object') {
         return;
@@ -445,7 +476,7 @@ function buildIntegrityDetailSegments(event) {
   if (failedSymbols.length) {
     segments.push(`失败合约: ${failedSymbols.join(', ')}`);
   }
-  const detail = event?.detail;
+  const detail = event && event.detail;
   if (detail) {
     segments.push(String(detail));
   }
@@ -467,9 +498,13 @@ function renderIntegritySelectionDetail(point, dataset = null) {
   const pointKey = makeIntegrityPointKey(point);
   selectedIntegrityPointKey = pointKey;
 
-  const streamLabel = dataset?.xdpIntegrity?.streamLabel || point.stream_label || describeStreamLabel(point.stream_key) || '';
+  const streamLabel =
+    getNested(dataset, ['xdpIntegrity', 'streamLabel'], '')
+    || point.stream_label
+    || describeStreamLabel(point.stream_key)
+    || '';
   const status = String(point.status || '').toLowerCase();
-  const isOk = point.is_ok ?? status === 'ok';
+  const isOk = !isNil(point.is_ok) ? point.is_ok : status === 'ok';
   const statusLabel = isOk ? '正常' : '异常';
   const timeLabel = point.timestamp ? `${toLocal(point.timestamp)} (${formatTimeOfDay(point.timestamp)})` : '未知时间';
   const exchangeLabel = point.exchange || '未知来源';
@@ -542,7 +577,7 @@ function normalizeIntegrityEvent(raw, fallbackHost = '', fallbackInterface = '')
 
   const timestamp = Number(raw.timestamp) || 0;
   const status = String(raw.status || '').toLowerCase();
-  const isOk = raw.is_ok ?? status === 'ok';
+  const isOk = !isNil(raw.is_ok) ? raw.is_ok : status === 'ok';
   const type = String(raw.type || '').toLowerCase();
   const stage = String(raw.stage || raw.stream_stage || '').trim();
   const exchange = String(raw.exchange || '').trim();
@@ -572,7 +607,9 @@ function normalizeIntegrityEvent(raw, fallbackHost = '', fallbackInterface = '')
                   if (!req || typeof req !== 'object') {
                     return null;
                   }
-                  const reqName = String(req.request ?? req.name ?? '').trim();
+                  const reqName = String(
+                    firstDefined(req.request, req.name, '')
+                  ).trim();
                   const reqStatus = String(req.status || '').toLowerCase();
                   const normalizedReq = {
                     name: reqName,
@@ -685,7 +722,9 @@ function initChart() {
               if (ctx.dataset.xdpIntegrity) {
                 const raw = ctx.raw || {};
                 const status = String(raw.status || '').toLowerCase();
-                const isOk = raw.is_ok ?? raw.isOk ?? status === 'ok';
+                const isOk = !isNil(raw.is_ok)
+                  ? raw.is_ok
+                  : (!isNil(raw.isOk) ? raw.isOk : status === 'ok');
                 const stream = resolveIntegrityStream(raw);
                 const statusLabel = formatIntegrityStatusLabel(raw, stream, { includeSymbol: true });
                 const host = raw.hostname || '';
@@ -720,7 +759,13 @@ function initChart() {
                 return '';
               }
               const first = items[0];
-              const rawIndex = Math.round(first.parsed?.x ?? first.dataIndex ?? 0);
+              const rawIndex = Math.round(
+                firstDefined(
+                  getNested(first, ['parsed', 'x'], undefined),
+                  first.dataIndex,
+                  0,
+                ),
+              );
               if (!Number.isFinite(rawIndex) || integritySnapshotByBucket.length === 0) {
                 return '';
               }
@@ -794,7 +839,13 @@ function initChart() {
     if (!item) {
       return '';
     }
-    const idx = Math.round(item.parsed?.x ?? item.dataIndex ?? 0);
+    const idx = Math.round(
+      firstDefined(
+        getNested(item, ['parsed', 'x'], undefined),
+        item.dataIndex,
+        0,
+      ),
+    );
     const range = bucketRanges[idx];
     if (!range) {
       return '';
@@ -806,8 +857,11 @@ function initChart() {
 async function loadStatus() {
   const res = await fetch('api/status');
   const data = await res.json();
-  const cfg = data.config;
-  const dashboardLabel = String(cfg?.dashboard ?? currentDashboardSlug || 'default');
+  const cfg = data.config || {};
+  const cfgDashboard = !isNil(cfg.dashboard) ? cfg.dashboard : null;
+  const fallbackDashboard = currentDashboardSlug || 'default';
+  const dashboardName = !isNil(cfgDashboard) ? cfgDashboard : fallbackDashboard;
+  const dashboardLabel = String(dashboardName || 'default');
   const isDefaultDashboard = !dashboardLabel || dashboardLabel === 'default';
   const dashboardSuffix = isDefaultDashboard ? '' : ` · ${dashboardLabel}`;
   document.title = `XDP 带宽监测面板${dashboardSuffix}`;
@@ -904,7 +958,7 @@ function renderIntegrityStreamToggles() {
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.value = key;
-    const shouldCheck = integrityStreamVisibility.get(key) ?? false;
+    const shouldCheck = valueOr(integrityStreamVisibility.get(key), false);
     checkbox.checked = shouldCheck;
     checkbox.addEventListener('change', () => {
       integrityStreamVisibility.set(key, checkbox.checked);
@@ -999,7 +1053,9 @@ function getIntegrityTooltipFooterLines(bucketIndex) {
     if (!stream) {
       continue;
     }
-    const ok = event.is_ok ?? event.isOk ?? String(event.status || '').toLowerCase() === 'ok';
+    const ok = !isNil(event.is_ok)
+      ? event.is_ok
+      : (!isNil(event.isOk) ? event.isOk : String(event.status || '').toLowerCase() === 'ok');
     const timeLabel = event.timestamp ? formatTimeOfDay(event.timestamp) : '未知时间';
     const label = formatIntegrityStatusLabel(event, stream, { includeSymbol: true });
     const statusLabel = ok ? '正常' : '异常';
@@ -1046,8 +1102,8 @@ function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
     endTime: formatTimeOfDay(bucket.end_ts),
   }));
   const pointCount = buckets.length;
-  const rawMaxValues = buckets.map((b) => pickNumber(b.max_bps ?? b.bps_max ?? b.max));
-  const rawAvgValues = buckets.map((b) => pickNumber(b.avg_bps ?? b.bps_avg ?? b.avg));
+  const rawMaxValues = buckets.map((b) => pickNumber(firstDefined(b.max_bps, b.bps_max, b.max)));
+  const rawAvgValues = buckets.map((b) => pickNumber(firstDefined(b.avg_bps, b.bps_avg, b.avg)));
   const values = rawMaxValues.map((value) => value / UNIT_SCALE);
   const avgValues = rawAvgValues.map((value) => value / UNIT_SCALE);
   const markFlags = rawMaxValues.map((value) => alertThresholdBps > 0 && value >= alertThresholdBps);
@@ -1083,14 +1139,18 @@ function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
       endpoint: singlePoint ? 'single-point' : 'multi-point',
       latest: pointCount
         ? {
-            start: latestRange?.startLocal,
-            end: latestRange?.endLocal,
+            start: latestRange ? latestRange.startLocal : undefined,
+            end: latestRange ? latestRange.endLocal : undefined,
             max_bps: rawMaxValues[rawMaxValues.length - 1],
             max_bps_mbps: values[values.length - 1],
             avg_bps: rawAvgValues[rawAvgValues.length - 1],
             avg_bps_mbps: avgValues[avgValues.length - 1],
-            avg_source: buckets[buckets.length - 1].avg_source ?? null,
-            max_source: buckets[buckets.length - 1].max_source ?? null,
+            avg_source: !isNil(buckets[buckets.length - 1].avg_source)
+              ? buckets[buckets.length - 1].avg_source
+              : null,
+            max_source: !isNil(buckets[buckets.length - 1].max_source)
+              ? buckets[buckets.length - 1].max_source
+              : null,
             keys: Object.keys(buckets[buckets.length - 1]).sort(),
           }
         : null,
@@ -1125,16 +1185,16 @@ function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
   maxChart.data.labels = [];
   const datasets = maxChart.data.datasets || [];
   const fallbackDatasets = datasets.slice(0, 3);
-  const maxDataset =
-    datasets.find((item) => item?.label === '最大带宽') || fallbackDatasets[0];
-  const avgDataset =
-    datasets.find((item) => item?.label === '平均带宽') || fallbackDatasets[1];
-  const thresholdDataset =
-    datasets.find((item) => item?.label === '阈值') || fallbackDatasets[2];
+    const maxDataset =
+      datasets.find((item) => item && item.label === '最大带宽') || fallbackDatasets[0];
+    const avgDataset =
+      datasets.find((item) => item && item.label === '平均带宽') || fallbackDatasets[1];
+    const thresholdDataset =
+      datasets.find((item) => item && item.label === '阈值') || fallbackDatasets[2];
   const baseDatasets = [maxDataset, avgDataset, thresholdDataset].filter(Boolean);
   const existingIntegrityDatasets = new Map();
   for (const dataset of datasets) {
-    if (dataset?.xdpIntegrity?.streamKey) {
+    if (getNested(dataset, ['xdpIntegrity', 'streamKey'], null)) {
       existingIntegrityDatasets.set(dataset.xdpIntegrity.streamKey, dataset);
     }
   }
@@ -1181,7 +1241,9 @@ function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
     if (!stream) {
       continue;
     }
-    const isOk = event.is_ok ?? event.isOk ?? String(event.status || '').toLowerCase() === 'ok';
+    const isOk = !isNil(event.is_ok)
+      ? event.is_ok
+      : (!isNil(event.isOk) ? event.isOk : String(event.status || '').toLowerCase() === 'ok');
     const eventType = event.type || '';
     const yValue = getIntegrityYPosition(stream.category, isOk, stream.key);
     const streamKey = stream.key;
@@ -1203,7 +1265,7 @@ function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
       };
       overlayByStream.set(streamKey, entry);
     }
-    const streamVisible = integrityStreamVisibility.get(streamKey) ?? false;
+    const streamVisible = valueOr(integrityStreamVisibility.get(streamKey), false);
     if (!streamVisible && isOk) {
       continue;
     }
@@ -1278,60 +1340,65 @@ function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
       colors: entry.colors.slice(),
       borderColors: entry.borderColors.slice(),
       baseColor: entry.baseColor,
-      visible: integrityStreamVisibility.get(entry.stream.key) ?? false,
+      visible: valueOr(integrityStreamVisibility.get(entry.stream.key), false),
       pointKeys: sortedPoints.map((pt) => pt.point_key || makeIntegrityPointKey(pt)),
     };
     if (matchedSelection && matchedSelection.streamKey === entry.stream.key) {
       matchedSelection.dataset = dataset;
     }
     dataset.pointRadius = (ctx) => {
-      const arr = ctx.dataset.xdpIntegrity?.radii;
+      const arr = getNested(ctx, ['dataset', 'xdpIntegrity', 'radii'], null);
       if (Array.isArray(arr) && ctx.dataIndex < arr.length) {
         return arr[ctx.dataIndex];
       }
-      return ctx.raw?.is_ok ? 5 : 7;
+      const rawIsOk = getNested(ctx, ['raw', 'is_ok'], null);
+      return !isNil(rawIsOk) ? (rawIsOk ? 5 : 7) : 7;
     };
     dataset.pointHoverRadius = (ctx) => {
-      const arr = ctx.dataset.xdpIntegrity?.hoverRadii;
+      const arr = getNested(ctx, ['dataset', 'xdpIntegrity', 'hoverRadii'], null);
       if (Array.isArray(arr) && ctx.dataIndex < arr.length) {
         return arr[ctx.dataIndex];
       }
-      return ctx.raw?.is_ok ? 7 : 9;
+      const rawIsOk = getNested(ctx, ['raw', 'is_ok'], null);
+      return !isNil(rawIsOk) ? (rawIsOk ? 7 : 9) : 9;
     };
     dataset.pointHitRadius = (ctx) => {
-      const arr = ctx.dataset.xdpIntegrity?.hitRadii;
+      const arr = getNested(ctx, ['dataset', 'xdpIntegrity', 'hitRadii'], null);
       if (Array.isArray(arr) && ctx.dataIndex < arr.length) {
         return arr[ctx.dataIndex];
       }
-      return ctx.raw?.is_ok ? 9 : 11;
+      const rawIsOk = getNested(ctx, ['raw', 'is_ok'], null);
+      return !isNil(rawIsOk) ? (rawIsOk ? 9 : 11) : 11;
     };
     dataset.pointBorderWidth = (ctx) => {
-      const arr = ctx.dataset.xdpIntegrity?.borderWidths;
+      const arr = getNested(ctx, ['dataset', 'xdpIntegrity', 'borderWidths'], null);
       if (Array.isArray(arr) && ctx.dataIndex < arr.length) {
         return arr[ctx.dataIndex];
       }
-      return ctx.raw?.is_ok ? 1 : 2;
+      const rawIsOk = getNested(ctx, ['raw', 'is_ok'], null);
+      return !isNil(rawIsOk) ? (rawIsOk ? 1 : 2) : 2;
     };
     dataset.pointStyle = (ctx) => {
-      const arr = ctx.dataset.xdpIntegrity?.styles;
+      const arr = getNested(ctx, ['dataset', 'xdpIntegrity', 'styles'], null);
       if (Array.isArray(arr) && ctx.dataIndex < arr.length) {
         return arr[ctx.dataIndex];
       }
-      return getIntegrityPointStyle(ctx.raw?.type);
+      const rawType = getNested(ctx, ['raw', 'type'], '');
+      return getIntegrityPointStyle(rawType);
     };
     dataset.pointBackgroundColor = (ctx) => {
-      const arr = ctx.dataset.xdpIntegrity?.colors;
+      const arr = getNested(ctx, ['dataset', 'xdpIntegrity', 'colors'], null);
       if (Array.isArray(arr) && ctx.dataIndex < arr.length) {
         return arr[ctx.dataIndex];
       }
-      return ctx.dataset.xdpIntegrity?.baseColor || '#22c55e';
+      return getNested(ctx, ['dataset', 'xdpIntegrity', 'baseColor'], '#22c55e');
     };
     dataset.pointBorderColor = (ctx) => {
-      const arr = ctx.dataset.xdpIntegrity?.borderColors;
+      const arr = getNested(ctx, ['dataset', 'xdpIntegrity', 'borderColors'], null);
       if (Array.isArray(arr) && ctx.dataIndex < arr.length) {
         return arr[ctx.dataIndex];
       }
-      return ctx.dataset.xdpIntegrity?.baseColor || '#22c55e';
+      return getNested(ctx, ['dataset', 'xdpIntegrity', 'baseColor'], '#22c55e');
     };
     integrityDatasets.push(dataset);
   });
@@ -1453,7 +1520,9 @@ function renderIntegrityEvents(events) {
         if (!latest) {
           continue;
         }
-        const ok = latest.is_ok ?? String(latest.status || '').toLowerCase() === 'ok';
+        const ok = !isNil(latest.is_ok)
+          ? latest.is_ok
+          : String(latest.status || '').toLowerCase() === 'ok';
         const category = String(entry.stream.category || latest.type || 'integrity').toLowerCase();
         const isTrade = isTradeCategory(category) || String(latest.type || '').toLowerCase() === 'trade';
         const exchangeLabel = (latest.exchange || '').trim() || '未知来源';
@@ -1513,7 +1582,9 @@ function renderIntegrityEvents(events) {
   for (const item of combined) {
     const event = item.event;
     const stream = item.stream;
-    const ok = event.is_ok ?? String(event.status || '').toLowerCase() === 'ok';
+    const ok = !isNil(event.is_ok)
+      ? event.is_ok
+      : String(event.status || '').toLowerCase() === 'ok';
     if (ok) {
       continue;
     }
@@ -1533,7 +1604,9 @@ function renderIntegrityEvents(events) {
 
   for (const { event, stream } of visibleItems) {
     const li = document.createElement('li');
-    const ok = event.is_ok ?? String(event.status || '').toLowerCase() === 'ok';
+    const ok = !isNil(event.is_ok)
+      ? event.is_ok
+      : String(event.status || '').toLowerCase() === 'ok';
     li.classList.add('integrity-item');
     li.classList.add(ok ? 'ok' : 'bad');
     if (event.type) {
@@ -1578,8 +1651,9 @@ function handleIntegrityChartClick(evt) {
   }
   const elements = maxChart.getElementsAtEventForMode(evt, 'nearest', { intersect: true }, false);
   const integrityElement = elements.find((el) => {
-    const dataset = maxChart.data.datasets?.[el.datasetIndex];
-    return Boolean(dataset?.xdpIntegrity);
+    const datasets = getNested(maxChart, ['data', 'datasets'], []);
+    const dataset = Array.isArray(datasets) ? datasets[el.datasetIndex] : undefined;
+    return Boolean(getNested(dataset, ['xdpIntegrity'], null));
   });
   if (!integrityElement) {
     if (selectedIntegrityPointKey) {
@@ -1589,11 +1663,13 @@ function handleIntegrityChartClick(evt) {
     }
     return;
   }
-  const dataset = maxChart.data.datasets?.[integrityElement.datasetIndex];
-  if (!dataset?.xdpIntegrity) {
+  const datasets = getNested(maxChart, ['data', 'datasets'], []);
+  const dataset = Array.isArray(datasets) ? datasets[integrityElement.datasetIndex] : undefined;
+  if (!getNested(dataset, ['xdpIntegrity'], null)) {
     return;
   }
-  const rawPoint = dataset.data?.[integrityElement.index];
+  const dataPoints = dataset && dataset.data;
+  const rawPoint = Array.isArray(dataPoints) ? dataPoints[integrityElement.index] : undefined;
   if (!rawPoint) {
     return;
   }
@@ -1609,12 +1685,14 @@ async function refreshData() {
   try {
     const [bucketPayload, integrityPayload] = await Promise.all([fetchBucketsPayload(), fetchIntegrityData()]);
 
-    const buckets = Array.isArray(bucketPayload?.data) ? bucketPayload.data : [];
-    const bucketMeta = bucketPayload?.meta;
+    const buckets = Array.isArray(bucketPayload && bucketPayload.data) ? bucketPayload.data : [];
+    const bucketMeta = bucketPayload ? bucketPayload.meta : undefined;
     latestBuckets = buckets;
     latestBucketMeta = bucketMeta;
 
-    const rawIntegrityData = Array.isArray(integrityPayload?.data) ? integrityPayload.data : [];
+    const rawIntegrityData = Array.isArray(integrityPayload && integrityPayload.data)
+      ? integrityPayload.data
+      : [];
     const normalizedEvents = rawIntegrityData
       .map((item) => normalizeIntegrityEvent(item))
       .filter(Boolean)
@@ -1638,7 +1716,8 @@ async function refreshData() {
         });
       }
     });
-    const metaKeys = Array.isArray(integrityPayload?.meta?.keys) ? integrityPayload.meta.keys : [];
+    const metaKeysRaw = getNested(integrityPayload, ['meta', 'keys'], []);
+    const metaKeys = Array.isArray(metaKeysRaw) ? metaKeysRaw : [];
     metaKeys.forEach((item) => {
       if (!item || typeof item !== 'object') {
         return;

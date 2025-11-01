@@ -395,12 +395,14 @@ def _create_multi_dashboard_app(config_map: Dict[str, pathlib.Path]) -> FastAPI:
     _setup_logging()
     root_app = FastAPI(title="Market Integrity Monitor", version="1.0.0")
     root_app.state.dashboards = {name: str(path) for name, path in config_map.items()}
+    root_app.state.sub_apps: Dict[str, FastAPI] = {}
 
     first_prefix: str | None = None
     for name, path in config_map.items():
         prefix = f"/{name.strip('/')}"
         sub_app = _create_dashboard_app(path, dashboard_name=name)
         root_app.mount(prefix, sub_app)
+        root_app.state.sub_apps[prefix] = sub_app
 
         @root_app.get(prefix, include_in_schema=False)
         async def redirect_without_slash(prefix_path: str = prefix) -> RedirectResponse:
@@ -417,6 +419,18 @@ def _create_multi_dashboard_app(config_map: Dict[str, pathlib.Path]) -> FastAPI:
         @root_app.get("/")
         async def redirect_root() -> RedirectResponse:
             return RedirectResponse(url=f"{first_prefix}/", status_code=307)
+
+    @root_app.on_event("startup")
+    async def _startup_sub_apps() -> None:
+        for prefix, sub_app in root_app.state.sub_apps.items():
+            logging.getLogger("backend").info("启动子应用: prefix=%s", prefix)
+            await sub_app.router.startup()
+
+    @root_app.on_event("shutdown")
+    async def _shutdown_sub_apps() -> None:
+        for prefix, sub_app in root_app.state.sub_apps.items():
+            logging.getLogger("backend").info("停止子应用: prefix=%s", prefix)
+            await sub_app.router.shutdown()
 
     return root_app
 
