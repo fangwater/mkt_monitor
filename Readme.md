@@ -45,3 +45,6 @@
 }
 另外，还有rest请求
 
+## 多面板配置
+
+在仓库根目录直接放置多个 `config-*.yaml`（例如 `config-primary.yaml`、`config-secondary.yaml`）。启动后会自动发现这些配置文件，并分别挂载到 `/<名称>/` 路径；若同时存在 `config.yaml`，它会作为 `primary` 参与展示。无需再设置环境变量即可同时访问多个页面。

@@ -5,6 +5,8 @@ const integritySummaryEl = document.getElementById('integritySummary');
 const integrityEventsEl = document.getElementById('integrityEvents');
 const integrityTogglesEl = document.getElementById('integrityToggles');
 const debugMode = window.location.hash.includes('debug');
+const pathSegments = window.location.pathname.split('/').filter(Boolean);
+const currentDashboardSlug = pathSegments.length > 0 ? pathSegments[0] : '';
 
 if (chartCanvas) {
   chartCanvas.addEventListener('click', handleIntegrityChartClick);
@@ -59,7 +61,7 @@ const hoverGuideLinePlugin = {
 ChartJS.register(hoverGuideLinePlugin);
 
 if (debugMode) {
-  console.info('[XDP] 调试模式已开启，fetch /api/buckets?debug=1');
+  console.info('[XDP] 调试模式已开启，fetch api/buckets?debug=1');
 }
 const INTEGRITY_TYPE_LABELS = {
   trade: 'Trade',
@@ -802,9 +804,17 @@ function initChart() {
 }
 
 async function loadStatus() {
-  const res = await fetch('/api/status');
+  const res = await fetch('api/status');
   const data = await res.json();
   const cfg = data.config;
+  const dashboardLabel = String(cfg?.dashboard ?? currentDashboardSlug || 'default');
+  const isDefaultDashboard = !dashboardLabel || dashboardLabel === 'default';
+  const dashboardSuffix = isDefaultDashboard ? '' : ` · ${dashboardLabel}`;
+  document.title = `XDP 带宽监测面板${dashboardSuffix}`;
+  const titleEl = document.querySelector('header h1');
+  if (titleEl) {
+    titleEl.textContent = `XDP 带宽监测${dashboardSuffix}`;
+  }
   document.getElementById('iface').textContent = `接口: ${cfg.interface}`;
   document.getElementById('window').textContent = `窗口: ${cfg.window_seconds}s`;
   document.getElementById('tick').textContent = `Tick: ${cfg.tick_ms}ms`;
@@ -822,7 +832,8 @@ async function loadStatus() {
   if (sourceEl) {
     const tickLabel = cfg.tick_ms ? `${Number(cfg.tick_ms).toFixed(0)}ms` : '未知';
     const windowLabel = windowSeconds ? `${Number(windowSeconds).toFixed(2)}s` : '未知';
-    sourceEl.textContent = `数据来源：XDP ${tickLabel} Tick → ${windowLabel} 窗口 max`;
+    const sourcePrefix = isDefaultDashboard ? '数据来源' : `数据来源（${dashboardLabel}）`;
+    sourceEl.textContent = `${sourcePrefix}：XDP ${tickLabel} Tick → ${windowLabel} 窗口 max`;
   }
   if (cfg && cfg.refresh_interval_ms) {
     const newInterval = Number(cfg.refresh_interval_ms);
@@ -837,7 +848,7 @@ async function loadStatus() {
 }
 
 async function fetchBucketsPayload() {
-  const endpoint = debugMode ? '/api/buckets?debug=1' : '/api/buckets';
+  const endpoint = debugMode ? 'api/buckets?debug=1' : 'api/buckets';
   const res = await fetch(endpoint);
   if (!res.ok) {
     console.error('获取数据失败', await res.text());
@@ -925,7 +936,7 @@ function renderIntegrityStreamToggles() {
 
 async function fetchIntegrityData(limit = 200) {
   const params = new URLSearchParams({ limit: String(limit), meta: '1' });
-  const res = await fetch(`/api/integrity?${params.toString()}`);
+  const res = await fetch(`api/integrity?${params.toString()}`);
   if (!res.ok) {
     throw new Error(await res.text());
   }

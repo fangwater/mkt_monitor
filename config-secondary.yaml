@@ -1,0 +1,49 @@
+server:
+  host: 0.0.0.0
+  port: 12345
+
+retention:
+  xdp_points: 51840           # 5s 间隔，72 小时
+  integrity_points: 4320      # 默认 1 分钟间隔，72 小时
+  retention_seconds: 0        # 关闭按时间裁剪，依赖条数控制
+
+xdp_streams:
+  - name: secondary-xdp
+    endpoint: tcp://103.90.136.197:16666
+    topic: ""
+
+integrity_streams:
+  - name: secondary-integrity_trade
+    endpoint: tcp://103.90.136.197:25555
+    topic: integrity_trade
+    hostname: cc-jp-yf-srv-197
+    interface: ens18
+    retention_points: 4320       # 1 分钟一条，保留 72 小时
+  - name: secondary-integrity_inc
+    endpoint: tcp://103.90.136.197:25556
+    topic: integrity_inc
+    hostname: cc-jp-yf-srv-197
+    interface: ens18
+    retention_points: 86400      # 3 秒一条，保留 72 小时
+  - name: secondary-integrity_trade-futures
+    endpoint: tcp://103.90.136.197:25556
+    topic: integrity_trade
+    hostname: cc-jp-yf-srv-197
+    interface: ens18
+    retention_points: 4320       # 1 分钟一条，保留 72 小时
+  - name: secondary-rest_summary-1m
+    endpoint: tcp://103.90.136.197:25556
+    topic: rest_summary
+    hostname: cc-jp-yf-srv-197
+    interface: ens18
+    retention_points: 4320       # 1 分钟一条，保留 72 小时
+  - name: secondary-rest_summary-5m
+    endpoint: tcp://103.90.136.197:25556
+    topic: rest_summary_5m
+    hostname: cc-jp-yf-srv-197
+    interface: ens18
+    retention_points: 864        # 5 分钟一条，保留 72 小时
+
+frontend:
+  alert_threshold_bps: 250000000   # 约 250 Mbps
+  refresh_interval_ms: 5000
