@@ -9,38 +9,38 @@ retention:
 
 xdp_streams:
   - name: secondary-xdp
-    endpoint: tcp://103.90.136.197:16666
+    endpoint: tcp://103.90.136.195:16666
     topic: ""
 
 integrity_streams:
   - name: secondary-integrity_trade
-    endpoint: tcp://103.90.136.197:25555
+    endpoint: tcp://103.90.136.195:25555
     topic: integrity_trade
-    hostname: cc-jp-yf-srv-197
+    hostname: cc-jp-yf-srv-195
     interface: ens18
     retention_points: 4320       # 1 分钟一条，保留 72 小时
   - name: secondary-integrity_inc
-    endpoint: tcp://103.90.136.197:25556
+    endpoint: tcp://103.90.136.195:25556
     topic: integrity_inc
-    hostname: cc-jp-yf-srv-197
+    hostname: cc-jp-yf-srv-195
     interface: ens18
     retention_points: 86400      # 3 秒一条，保留 72 小时
   - name: secondary-integrity_trade-futures
-    endpoint: tcp://103.90.136.197:25556
+    endpoint: tcp://103.90.136.195:25556
     topic: integrity_trade
-    hostname: cc-jp-yf-srv-197
+    hostname: cc-jp-yf-srv-195
     interface: ens18
     retention_points: 4320       # 1 分钟一条，保留 72 小时
   - name: secondary-rest_summary-1m
-    endpoint: tcp://103.90.136.197:25556
+    endpoint: tcp://103.90.136.195:25556
     topic: rest_summary
-    hostname: cc-jp-yf-srv-197
+    hostname: cc-jp-yf-srv-195
     interface: ens18
     retention_points: 4320       # 1 分钟一条，保留 72 小时
   - name: secondary-rest_summary-5m
-    endpoint: tcp://103.90.136.197:25556
+    endpoint: tcp://103.90.136.195:25556
     topic: rest_summary_5m
-    hostname: cc-jp-yf-srv-197
+    hostname: cc-jp-yf-srv-195
     interface: ens18
     retention_points: 864        # 5 分钟一条，保留 72 小时
 
