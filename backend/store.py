@@ -51,12 +51,32 @@ class MetricStore:
         retention_seconds: int,
     ) -> None:
         self._xdp_points = xdp_points
-        self._integrity_points = integrity_points
+        self._integrity_points = max(integrity_points, 1)
         self._retention_seconds = retention_seconds
         self._lock = threading.Lock()
         self._xdp_series: Dict[str, Deque[Dict[str, Any]]] = defaultdict(deque)
         self._integrity_series: Dict[str, Deque[Dict[str, Any]]] = defaultdict(deque)
-        self._alerts: Deque[Dict[str, Any]] = deque()
+        self._integrity_retention: Dict[str, int] = {}
+        self._alerts: Deque[Dict[str, Any]] = deque(maxlen=max(self._integrity_points, 128))
+
+    def set_integrity_retention(self, stream: str, points: Optional[int]) -> None:
+        value: Optional[int] = None
+        if points is not None:
+            try:
+                candidate = int(points)
+            except (TypeError, ValueError):
+                candidate = None
+            else:
+                if candidate > 0:
+                    value = candidate
+        with self._lock:
+            if value is None:
+                self._integrity_retention.pop(stream, None)
+            else:
+                self._integrity_retention[stream] = value
+
+    def _integrity_retention_limit(self, stream: str) -> int:
+        return self._integrity_retention.get(stream, self._integrity_points)
 
     def _prune_deque(self, series: Deque[Dict[str, Any]], cutoff: float) -> None:
         while series and _as_float(series[0].get("timestamp"), default=0.0) < cutoff:
@@ -72,12 +92,6 @@ class MetricStore:
             self._prune_deque(series, cutoff)
             if not series:
                 del self._xdp_series[key]
-        for key in list(self._integrity_series.keys()):
-            series = self._integrity_series[key]
-            self._prune_deque(series, cutoff)
-            if not series:
-                del self._integrity_series[key]
-        self._prune_deque(self._alerts, cutoff)
 
     # xdp ------------------------------------------------------------------
     def add_xdp_payload(self, payload: Dict[str, Any], *, source: str | None = None) -> Tuple[str, Dict[str, Any]]:
@@ -124,6 +138,8 @@ class MetricStore:
             series = self._xdp_series[key]
             is_new_key = len(series) == 0
             series.append(entry)
+            while len(series) > self._xdp_points:
+                series.popleft()
             self._prune_locked(reference_ts=timestamp)
 
         if is_new_key:
@@ -138,119 +154,204 @@ class MetricStore:
         *,
         source: str | None = None,
         defaults: Dict[str, Any] | None = None,
-    ) -> Tuple[str, Dict[str, Any], bool]:
-        exchange = str(payload.get("exchange") or "")
-        symbol = str(payload.get("symbol") or "")
-        defaults = defaults or {}
-        hostname_raw = defaults.get("hostname") or ""
-        interface_raw = defaults.get("interface") or ""
-        hostname = str(hostname_raw) if hostname_raw else ""
-        interface = str(interface_raw) if interface_raw else ""
+    ) -> List[Tuple[str, Dict[str, Any], bool]]:
+        if not isinstance(payload, dict):
+            return []
 
-        key_parts: List[str] = []
-        if hostname:
-            key_parts.append(hostname)
-        if interface:
-            key_parts.append(interface)
-        if not key_parts:
-            if exchange:
-                key_parts.append(exchange)
-            if symbol:
-                key_parts.append(symbol)
-        key = "|".join([part for part in key_parts if part])
-        if not key:
-            key = exchange or symbol or (source or "integrity")
+        defaults = defaults or {}
+        exchange = str(payload.get("exchange") or "")
+        event_type = str(payload.get("type") or "").lower()
+        stage_raw = payload.get("stage") or payload.get("mode") or ""
+        stage = str(stage_raw) if stage_raw is not None else ""
+
+        hostname = str((defaults.get("hostname") or payload.get("hostname") or "") or "")
+        interface = str((defaults.get("interface") or payload.get("interface") or "") or "")
 
         timestamp = (
-            _coerce_timestamp(payload.get("timestamp_ms"))
+            _coerce_timestamp(payload.get("timestamp"))
+            or _coerce_timestamp(payload.get("timestamp_ms"))
             or _coerce_timestamp(payload.get("period_end_ts"))
+            or _coerce_timestamp(payload.get("close_tp"))
             or _coerce_timestamp(payload.get("tp"))
-            or _coerce_timestamp(payload.get("timestamp"))
             or time.time()
         )
         timestamp_iso = _isoformat(timestamp)
 
-        status = str(payload.get("status") or "").lower()
-        is_ok = status == "ok"
+        period = _as_int(payload.get("period"))
 
-        event_type = str(payload.get("type") or "")
-
-        entry = {
+        base_entry: Dict[str, Any] = {
             "exchange": exchange,
-            "symbol": symbol,
             "timestamp": timestamp,
             "timestamp_iso": timestamp_iso,
-            "minute": _as_int(payload.get("minute")),
-            "status": status,
-            "detail": payload.get("detail"),
             "type": event_type,
-            "is_ok": is_ok,
+            "stage": stage,
+            "period": period,
+            "status": str(payload.get("status") or "").lower(),
+            "detail": payload.get("detail"),
             "source": source,
             "hostname": hostname,
             "interface": interface,
         }
 
-        if payload.get("trade_batch"):
-            batch_items: List[Dict[str, Any]] = []
-            raw_items = payload.get("trade_batch_items") or []
-            for raw_item in raw_items:
+        normalized_results: List[Dict[str, Any]] = []
+        failed_symbols: List[str] = []
+        failed_requests: List[str] = []
+
+        raw_results = payload.get("results")
+        if isinstance(raw_results, list):
+            for raw_item in raw_results:
                 if not isinstance(raw_item, dict):
                     continue
-                item_symbol = str(raw_item.get("symbol") or "")
-                item_status = str(raw_item.get("status") or "").lower()
-                item_ts = _coerce_timestamp(raw_item.get("timestamp"))
-                if item_ts is None:
-                    item_ts = timestamp
-                item_detail = raw_item.get("detail")
-                item_minute = _as_int(raw_item.get("minute"))
-                batch_items.append(
-                    {
-                        "symbol": item_symbol,
-                        "status": item_status,
-                        "detail": item_detail,
-                        "minute": item_minute,
-                        "timestamp": item_ts,
-                        "timestamp_iso": _isoformat(item_ts) if item_ts is not None else None,
-                    }
-                )
-            entry["trade_batch"] = True
-            entry["trade_batch_items"] = batch_items
-            entry["trade_batch_size"] = _as_int(
-                payload.get("trade_batch_size"),
-                default=len(batch_items),
-            )
-            failure_count = _as_int(
-                payload.get("trade_batch_failures"),
-                default=sum(1 for item in batch_items if item.get("status") != "ok"),
-            )
-            entry["trade_batch_failures"] = failure_count
-        else:
-            entry["trade_batch"] = False
-            entry["trade_batch_items"] = []
-            entry["trade_batch_size"] = 0
-            entry["trade_batch_failures"] = 0
+                symbol_raw = raw_item.get("symbol")
+                symbol = str(symbol_raw or "")
+                symbol_norm = symbol.upper() if symbol else ""
+                status = str(raw_item.get("status") or "").lower()
+                detail_value = raw_item.get("detail")
+
+                normalized_result: Dict[str, Any] = {
+                    "symbol": symbol_norm,
+                    "status": status,
+                }
+                if detail_value is not None:
+                    normalized_result["detail"] = detail_value
+
+                requests: List[Dict[str, Any]] = []
+                raw_requests = raw_item.get("requests")
+                if isinstance(raw_requests, list):
+                    for request_item in raw_requests:
+                        if not isinstance(request_item, dict):
+                            continue
+                        request_name_raw = request_item.get("request") or request_item.get("name") or ""
+                        request_name = str(request_name_raw or "")
+                        request_status = str(request_item.get("status") or "").lower()
+                        request_detail = request_item.get("detail")
+                        normalized_request: Dict[str, Any] = {
+                            "name": request_name,
+                            "status": request_status,
+                        }
+                        if request_detail is not None:
+                            normalized_request["detail"] = request_detail
+                        requests.append(normalized_request)
+                        if request_status != "ok":
+                            label = request_name or str(request_detail or "unknown")
+                            if symbol_norm:
+                                label = f"{symbol_norm}:{label}"
+                            failed_requests.append(label)
+                    if requests:
+                        normalized_result["requests"] = requests
+
+                normalized_results.append(normalized_result)
+                if status and status != "ok":
+                    failed_symbols.append(symbol_norm or symbol)
+
+        failed_symbols = [sym for sym in dict.fromkeys(sym for sym in failed_symbols if sym)]
+        failed_requests = [req for req in dict.fromkeys(req for req in failed_requests if req)]
+
+        entry = dict(base_entry)
+        entry["symbol"] = str(payload.get("symbol") or "").upper()
+        entry["is_ok"] = entry["status"] == "ok" if entry.get("status") else not failed_symbols and not failed_requests
+        if entry.get("status") in (None, "") and (failed_symbols or failed_requests):
+            entry["status"] = "fail"
+            entry["is_ok"] = False
+
+        entry["results"] = normalized_results
+        entry["results_count"] = len(normalized_results)
+        entry["request_count"] = sum(
+            len(result.get("requests") or []) for result in normalized_results if isinstance(result, dict)
+        )
+        entry["failed_symbols"] = failed_symbols
+        entry["failed_count"] = len(failed_symbols)
+        entry["failed_requests"] = failed_requests
+        entry["failed_request_count"] = len(failed_requests)
+        if not entry.get("detail"):
+            if failed_symbols:
+                entry["detail"] = "失败合约: " + ", ".join(failed_symbols)
+            elif failed_requests:
+                entry["detail"] = "失败请求: " + ", ".join(failed_requests)
+        entry["stream"] = source
+        entry["source"] = source
+
+        updates: List[Tuple[str, Dict[str, Any], bool]] = []
+        latest_ts = timestamp
 
         with self._lock:
+            stream_name = source or "integrity"
+            key = self._compose_integrity_key(
+                stream_name=stream_name,
+                hostname=hostname,
+                interface=interface,
+                exchange=exchange,
+                symbol="",
+                stage=stage,
+                event_type=event_type,
+            )
+            entry["key"] = key
+            entry["stream"] = stream_name
             series = self._integrity_series[key]
             is_new_key = len(series) == 0
             series.append(entry)
-            if not is_ok:
+            retention_limit = self._integrity_retention_limit(stream_name)
+            while len(series) > retention_limit:
+                series.popleft()
+            if not entry.get("is_ok"):
                 self._alerts.append(entry)
-            self._prune_locked(reference_ts=timestamp)
+            series_ts = _as_float(entry.get("timestamp"), default=timestamp)
+            if series_ts > latest_ts:
+                latest_ts = series_ts
+            updates.append((key, entry, not entry.get("is_ok")))
+            if is_new_key:
+                log.info(
+                    "首次收到完整性数据: key=%s stream=%s exchange=%s type=%s stage=%s",
+                    key,
+                    stream_name,
+                    exchange,
+                    event_type,
+                    stage,
+                )
+            if not entry.get("is_ok"):
+                log.warning(
+                    "完整性检测异常: key=%s stream=%s exchange=%s type=%s stage=%s detail=%s",
+                    key,
+                    stream_name,
+                    exchange,
+                    event_type,
+                    stage,
+                    entry.get("detail"),
+                )
 
-        if is_new_key:
-            log.info("首次收到完整性数据: key=%s exchange=%s symbol=%s", key, exchange, symbol)
-        if not is_ok:
-            log.warning(
-                "完整性检测异常: key=%s exchange=%s symbol=%s status=%s detail=%s",
-                key,
-                exchange,
-                symbol,
-                status,
-                entry.get("detail"),
-            )
+            self._prune_locked(reference_ts=latest_ts)
 
-        return key, entry, not is_ok
+        return updates
+
+    def _compose_integrity_key(
+        self,
+        *,
+        stream_name: str,
+        hostname: str,
+        interface: str,
+        exchange: str,
+        symbol: str,
+        stage: str,
+        event_type: str,
+    ) -> str:
+        parts: List[str] = []
+        if stream_name:
+            parts.append(stream_name.lower())
+        if hostname:
+            parts.append(hostname)
+        if interface:
+            parts.append(interface)
+        if exchange:
+            parts.append(exchange.lower())
+        if stage:
+            parts.append(stage.lower())
+        if event_type:
+            parts.append(event_type.lower())
+        if symbol:
+            parts.append(symbol.upper())
+        if not parts:
+            return "integrity"
+        return "|".join(parts)
 
     # snapshots ------------------------------------------------------------
     def snapshot(self) -> Dict[str, Any]:
@@ -288,12 +389,18 @@ class MetricStore:
                 hostname = str(latest.get("hostname") or "")
                 interface = str(latest.get("interface") or "")
                 types = sorted({str(point.get("type") or "") for point in series if point.get("type")})
+                stages = sorted({str(point.get("stage") or "") for point in series if point.get("stage")})
+                stream_name = str(latest.get("stream") or latest.get("source") or "")
+                exchange = str(latest.get("exchange") or "")
                 records.append(
                     {
                         "key": key,
                         "hostname": hostname,
                         "interface": interface,
                         "types": [t for t in types if t],
+                        "stages": [s for s in stages if s],
+                        "stream": stream_name,
+                        "exchange": exchange,
                     }
                 )
         records.sort(key=lambda item: (item["hostname"], item["interface"]))
@@ -307,6 +414,7 @@ class MetricStore:
         hostname: Optional[str] = None,
         interface: Optional[str] = None,
         type_filter: Optional[str] = None,
+        stage: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         records: List[Dict[str, Any]] = []
@@ -327,7 +435,10 @@ class MetricStore:
                     if interface and iface != interface:
                         continue
                     point_type = str(point.get("type") or "")
+                    point_stage = str(point.get("stage") or "")
                     if type_filter and point_type != type_filter:
+                        continue
+                    if stage and point_stage != stage:
                         continue
                     record = dict(point)
                     record["key"] = key
@@ -336,6 +447,8 @@ class MetricStore:
                     record["hostname"] = host
                     record["interface"] = iface
                     record["type"] = point_type
+                    record["stage"] = point_stage
+                    record["stream"] = str(point.get("stream") or point.get("source") or "")
                     records.append(record)
 
         records.sort(key=lambda item: float(item.get("timestamp") or 0.0))

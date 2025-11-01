@@ -35,6 +35,7 @@ class ZMQStreamConfig:
     topic: str = ""
     hostname: str | None = None
     interface: str | None = None
+    retention_points: int | None = None
 
     def __post_init__(self) -> None:
         if not self.endpoint:
@@ -44,6 +45,13 @@ class ZMQStreamConfig:
             object.__setattr__(self, "hostname", str(self.hostname))
         if self.interface is not None:
             object.__setattr__(self, "interface", str(self.interface))
+        if self.retention_points is not None:
+            points = int(self.retention_points)
+            if points <= 0:
+                raise ValueError(f"{self.name} 的 retention_points 必须为正整数")
+            object.__setattr__(self, "retention_points", points)
+        else:
+            object.__setattr__(self, "retention_points", None)
 
 
 @dataclass(frozen=True)
@@ -105,6 +113,14 @@ def _parse_streams(items: Iterable[Dict[str, Any]], *, fallback_topic: str) -> T
             raise ValueError(f"{name} 的 hostname 必须是字符串")
         if interface is not None and not isinstance(interface, str):
             raise ValueError(f"{name} 的 interface 必须是字符串")
+        retention_points = raw_item.get("retention_points")
+        if retention_points is not None:
+            try:
+                retention_points = int(retention_points)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{name} 的 retention_points 必须是整数") from exc
+            if retention_points <= 0:
+                raise ValueError(f"{name} 的 retention_points 必须为正整数")
         streams.append(
             ZMQStreamConfig(
                 name=name,
@@ -112,6 +128,7 @@ def _parse_streams(items: Iterable[Dict[str, Any]], *, fallback_topic: str) -> T
                 topic=topic,
                 hostname=hostname,
                 interface=interface,
+                retention_points=retention_points,
             )
         )
     return tuple(streams)

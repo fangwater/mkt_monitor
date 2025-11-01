@@ -60,11 +60,13 @@ if (debugMode) {
 const INTEGRITY_TYPE_LABELS = {
   trade: 'Trade',
   inc_seq: 'INC',
+  rest_summary: 'REST',
 };
 const INTEGRITY_FAIL_COLOR = '#f87171';
 const INTEGRITY_POINT_STYLE = {
   trade: 'circle',
   inc_seq: 'triangle',
+  rest_summary: 'rectRounded',
 };
 const TRADE_TOOLTIP_LIMIT = 6;
 const INTEGRITY_STREAM_COLOR_POOL = [
@@ -86,8 +88,7 @@ let integrityStreamColorIndex = 0;
 const integrityStreamLabels = new Map();
 const TRADE_CATEGORY_PREFIX = 'trade/';
 const DEFAULT_TRADE_CATEGORY = `${TRADE_CATEGORY_PREFIX}default`;
-const INTEGRITY_TOGGLE_VISIBLE_TYPES = new Set(['trade']);
-const APP_VERSION = '20251101-6';
+const APP_VERSION = '20251101-8';
 
 console.info(`[Integrity] bundle ${APP_VERSION}`);
 
@@ -97,13 +98,14 @@ let alertThresholdBps = 0;
 let windowSeconds = 0;
 const UNIT_SCALE = 1_000_000; // 将 bps 转换为 Mbps 以便图表展示
 let bucketRanges = [];
-const integrityKeyMeta = new Map();
+const integrityStreamMeta = new Map();
+const integrityStreamVisibility = new Map();
 const integrityToggleInputs = new Map();
-let integritySelectedKey = null;
-let integrityKeys = [];
-const integrityActiveTypes = new Set();
 let isRefreshing = false;
 let integritySnapshotByBucket = [];
+let latestIntegrityEvents = [];
+let latestBuckets = [];
+let latestBucketMeta = null;
 
 function formatBps(bps) {
   const units = ['bps', 'Kbps', 'Mbps', 'Gbps', 'Tbps'];
@@ -160,8 +162,11 @@ const INTEGRITY_CATEGORY_LEVELS = {
   [`${TRADE_CATEGORY_PREFIX}binance-futures`]: 0.9,
   [`${TRADE_CATEGORY_PREFIX}binance`]: 0.78,
   [DEFAULT_TRADE_CATEGORY]: 0.86,
-  inc_seq: 0.52,
-  default: 0.32,
+  inc_seq: 0.6,
+  'rest/1m': 0.32,
+  'rest/5m': 0.24,
+  rest_summary: 0.28,
+  default: 0.18,
 };
 
 function computeStreamJitter(streamKey, spread = 0.12) {
@@ -204,54 +209,76 @@ function resolveIntegrityStream(event) {
   if (!event) {
     return null;
   }
-  const typeRaw = event.stream_category || event.type;
+  const typeRaw = event.type ?? event.stream_category;
   const type = String(typeRaw || '').toLowerCase();
   const exchange = String(event.exchange || '').trim();
-  const symbol = String(event.symbol || '').trim();
+  const symbol = String(event.symbol || '').trim().toUpperCase();
+  const stageValue = event.stage ?? event.stream_stage;
+  const stage = String(stageValue || '').trim();
+  const hostname = String(event.hostname || '').trim();
+  const iface = String(event.interface || '').trim();
 
-  let key;
-  let label;
+  let key = event.stream_key || event.key || '';
+  if (!key) {
+    const parts = [];
+    if (hostname) {
+      parts.push(hostname);
+    }
+    if (iface) {
+      parts.push(iface);
+    }
+    if (exchange) {
+      parts.push(exchange.toLowerCase());
+    }
+    if (stage) {
+      parts.push(stage.toLowerCase());
+    }
+    if (type) {
+      parts.push(type);
+    }
+    if (symbol) {
+      parts.push(symbol);
+    }
+    key = parts.length ? parts.join('::') : 'integrity';
+  }
+
+  const typeLabel = getIntegrityTypeLabel(type) || '完整性';
+  const labelParts = [];
+  if (exchange) {
+    labelParts.push(exchange);
+  }
+  if (stage) {
+    labelParts.push(stage);
+  }
+  if (symbol) {
+    labelParts.push(symbol);
+  }
+  labelParts.push(typeLabel);
+  const label = labelParts.join(' · ');
+
   let category;
   if (type === 'trade') {
-    const exchangePart = exchange || '未知交易所';
-    const normalizedExchange = (exchange || 'unknown').trim();
-    const exchangeKey = normalizedExchange.toLowerCase();
-    const isBatch = Boolean(event.trade_batch) || symbol === '__batch__';
-    if (isBatch) {
-      key = `${exchangeKey}::trade::__batch__`;
-      label = `${exchangePart} TRADE 汇总`;
-    } else {
-      const symbolPart = symbol || '未指定合约';
-      const normalizedSymbol = symbol || '*';
-      const normalizedSymbolKey = normalizedSymbol.toUpperCase();
-      key = `${exchangeKey}::trade::${normalizedSymbolKey}`;
-      label = `${symbolPart}-${exchangePart}-trade（合约）`;
-    }
-    const exchangeSlug = exchangeKey.replace(/[^a-z0-9]+/g, '-');
-    category = `${TRADE_CATEGORY_PREFIX}${exchangeSlug || 'unknown'}`;
-    event.stream_is_batch = isBatch;
+    const exchangeSlug = (exchange || 'unknown').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    category = `${TRADE_CATEGORY_PREFIX}${exchangeSlug || 'default'}`;
+  } else if (type === 'rest_summary') {
+    const stageSlug = stage ? stage.toLowerCase() : 'summary';
+    category = `rest/${stageSlug}`;
+  } else if (type) {
+    category = type;
   } else {
-    const exchangePart = exchange || '未知来源';
-    const typeLabel = type ? getIntegrityTypeLabel(type) : '完整性';
-    const normalizedType = type || 'generic';
-    const exchangeKey = (exchange || 'unknown').toLowerCase();
-    key = `${exchangeKey}::${normalizedType}`;
-    label = exchange ? `${exchangePart} ${typeLabel}` : typeLabel;
-    category = normalizedType;
+    category = 'integrity';
   }
 
-  if (event.stream_key !== key) {
-    event.stream_key = key;
-  }
-  if (event.stream_label !== label) {
-    event.stream_label = label;
-  }
-  if (event.stream_category !== category) {
-    event.stream_category = category;
+  event.stream_key = key;
+  event.stream_label = label;
+  event.stream_category = category;
+  if (stage) {
+    event.stage = stage;
+    event.stream_stage = stage;
   }
 
   integrityStreamLabels.set(key, label);
-  return { key, label, category };
+  return { key, label, category, stage };
 }
 
 function describeStreamLabel(key) {
@@ -262,44 +289,242 @@ function isTradeCategory(category) {
   return typeof category === 'string' && category.startsWith(TRADE_CATEGORY_PREFIX);
 }
 
-function ensureActiveTypes() {
-  if (integrityActiveTypes.size) {
-    return;
-  }
-  const meta = integritySelectedKey ? integrityKeyMeta.get(integritySelectedKey) : null;
-  const types = meta && Array.isArray(meta.types) ? meta.types : [];
-  for (const type of types) {
-    integrityActiveTypes.add(type);
-    const input = integrityToggleInputs.get(type);
-    if (input) {
-      input.checked = true;
+function ensureStreamVisibility() {
+  integrityStreamMeta.forEach((meta, streamKey) => {
+    if (integrityStreamVisibility.has(streamKey)) {
+      return;
     }
-  }
+    const defaultVisible = String(meta.type || '').toLowerCase() === 'trade';
+    integrityStreamVisibility.set(streamKey, defaultVisible);
+  });
 }
 
 function formatIntegrityStatusLabel(event, stream, { includeSymbol = false } = {}) {
-  const exchangeRaw = (event?.exchange || '').trim();
-  const fallbackLabel = stream?.label || '';
-  const fallbackExchange = fallbackLabel.includes(' ')
-    ? fallbackLabel.split(' ')[0]
-    : fallbackLabel.split('·')[0];
-  const exchangeLabel = exchangeRaw || fallbackExchange || '未知来源';
-  const categoryRaw = String(stream?.category || event?.type || '').toLowerCase();
-  const isTrade = isTradeCategory(categoryRaw) || String(event?.type || '').toLowerCase() === 'trade';
-  const typeLabel = isTrade ? 'TRADE' : getIntegrityTypeLabel(categoryRaw || event?.type);
+  const baseLabel = stream?.label || '';
+  const type = String(event?.type || '').toLowerCase();
+  const exchange = String(event?.exchange || '').trim();
+  const stage = String(event?.stage || '').trim();
+  const symbol = String(event?.symbol || '').trim().toUpperCase();
+
+  if (baseLabel) {
+    if (includeSymbol || !symbol) {
+      return baseLabel;
+    }
+    const fragments = baseLabel.split(' · ').filter((fragment) => fragment !== symbol);
+    return fragments.length ? fragments.join(' · ') : baseLabel;
+  }
+
   const parts = [];
-  const isBatch = Boolean(event?.trade_batch);
-  if (includeSymbol && event?.symbol && !(isBatch && event.symbol === '__batch__')) {
-    parts.push(event.symbol);
+  if (exchange) {
+    parts.push(exchange);
   }
-  parts.push(exchangeLabel);
-  if (typeLabel) {
-    parts.push(typeLabel);
+  if (stage) {
+    parts.push(stage);
   }
-  if (includeSymbol && isBatch && (!event?.symbol || event.symbol === '__batch__')) {
-    parts.push('汇总');
+  if (includeSymbol && symbol) {
+    parts.push(symbol);
   }
-  return parts.join(' ').trim();
+  const typeLabel = getIntegrityTypeLabel(type) || (type ? type.toUpperCase() : '完整性');
+  parts.push(typeLabel);
+  return parts.join(' · ') || typeLabel;
+}
+
+function getFailedRequests(event) {
+  if (!event) {
+    return [];
+  }
+  const preset = Array.isArray(event.failed_requests) ? event.failed_requests : [];
+  const normalizedPreset = preset
+    .map((item) => String(item || '').trim())
+    .filter((item) => item.length > 0);
+  if (normalizedPreset.length) {
+    return Array.from(new Set(normalizedPreset));
+  }
+  const fallback = [];
+  const requests = Array.isArray(event.requests) ? event.requests : [];
+  for (const req of requests) {
+    if (!req || typeof req !== 'object') {
+      continue;
+    }
+    const status = String(req.status || '').toLowerCase();
+    if (status === 'ok') {
+      continue;
+    }
+    const name = String(req.name || '').trim();
+    if (name) {
+      fallback.push(name);
+      continue;
+    }
+    const detail = String(req.detail || '').trim();
+    if (detail) {
+      fallback.push(detail);
+    }
+  }
+  const results = Array.isArray(event.results) ? event.results : [];
+  for (const result of results) {
+    if (!result || typeof result !== 'object') {
+      continue;
+    }
+    const symbol = String(result.symbol || '').trim().toUpperCase();
+    const nested = Array.isArray(result.requests) ? result.requests : [];
+    for (const req of nested) {
+      if (!req || typeof req !== 'object') {
+        continue;
+      }
+      const status = String(req.status || '').toLowerCase();
+      if (status === 'ok') {
+        continue;
+      }
+      const baseName = String(req.name || '').trim() || String(req.detail || '').trim();
+      if (!baseName) {
+        continue;
+      }
+      const label = symbol ? `${symbol}:${baseName}` : baseName;
+      fallback.push(label);
+    }
+  }
+  return Array.from(new Set(fallback.filter((item) => item.length > 0)));
+}
+
+function buildIntegrityDetailSegments(event) {
+  const segments = [];
+  const failedRequests = getFailedRequests(event);
+  if (failedRequests.length) {
+    segments.push(`失败请求: ${failedRequests.join(', ')}`);
+  }
+  const failedCount = Number(event?.failed_request_count) || failedRequests.length;
+  const totalCount =
+    Number(event?.request_count)
+    || (Array.isArray(event?.requests) ? event.requests.length : 0)
+    || (Array.isArray(event?.results)
+      ? event.results.reduce(
+          (acc, item) => acc + (Array.isArray(item?.requests) ? item.requests.length : 0),
+          0,
+        )
+      : 0);
+  if (totalCount > 0 && failedCount > 0) {
+    segments.push(`请求失败 ${failedCount}/${totalCount}`);
+  }
+  const failedSymbols = Array.isArray(event?.failed_symbols)
+    ? event.failed_symbols.map((item) => String(item || '').trim()).filter((item) => item.length > 0)
+    : [];
+  if (!failedSymbols.length && Array.isArray(event?.results)) {
+    event.results.forEach((result) => {
+      if (!result || typeof result !== 'object') {
+        return;
+      }
+      const status = String(result.status || '').toLowerCase();
+      if (status === 'ok') {
+        return;
+      }
+      const symbol = String(result.symbol || '').trim().toUpperCase();
+      if (symbol) {
+        failedSymbols.push(symbol);
+      }
+    });
+  }
+  if (failedSymbols.length) {
+    segments.push(`失败合约: ${failedSymbols.join(', ')}`);
+  }
+  const detail = event?.detail;
+  if (detail) {
+    segments.push(String(detail));
+  }
+  return segments;
+}
+
+function normalizeIntegrityEvent(raw, fallbackHost = '', fallbackInterface = '') {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+
+  const timestamp = Number(raw.timestamp) || 0;
+  const status = String(raw.status || '').toLowerCase();
+  const isOk = raw.is_ok ?? status === 'ok';
+  const type = String(raw.type || '').toLowerCase();
+  const stage = String(raw.stage || raw.stream_stage || '').trim();
+  const exchange = String(raw.exchange || '').trim();
+  const symbol = String(raw.symbol || '').trim().toUpperCase();
+  const hostname = String(raw.hostname || fallbackHost || '').trim();
+  const iface = String(raw.interface || fallbackInterface || '').trim();
+  const streamName = String(raw.stream || raw.source || '').trim();
+
+  const normalizedResults = Array.isArray(raw.results)
+    ? raw.results
+        .map((item) => {
+          if (!item || typeof item !== 'object') {
+            return null;
+          }
+          const itemSymbol = String(item.symbol || '').trim().toUpperCase();
+          const itemStatus = String(item.status || '').toLowerCase();
+          const normalized = {
+            symbol: itemSymbol,
+            status: itemStatus,
+          };
+          if (item.detail !== undefined && item.detail !== null) {
+            normalized.detail = String(item.detail);
+          }
+          const requests = Array.isArray(item.requests)
+            ? item.requests
+                .map((req) => {
+                  if (!req || typeof req !== 'object') {
+                    return null;
+                  }
+                  const reqName = String(req.request ?? req.name ?? '').trim();
+                  const reqStatus = String(req.status || '').toLowerCase();
+                  const normalizedReq = {
+                    name: reqName,
+                    status: reqStatus,
+                  };
+                  if (req.detail !== undefined && req.detail !== null) {
+                    normalizedReq.detail = String(req.detail);
+                  }
+                  return normalizedReq;
+                })
+                .filter(Boolean)
+            : [];
+          if (requests.length) {
+            normalized.requests = requests;
+          }
+          return normalized;
+        })
+        .filter(Boolean)
+    : [];
+
+  const failedSymbols = Array.isArray(raw.failed_symbols)
+    ? raw.failed_symbols.map((item) => String(item || '').trim().toUpperCase()).filter((item) => item.length > 0)
+    : [];
+  const failedRequests = Array.isArray(raw.failed_requests)
+    ? raw.failed_requests.map((item) => String(item || '').trim()).filter((item) => item.length > 0)
+    : [];
+
+  const event = {
+    key: raw.key || raw.stream_key || '',
+    stream: streamName,
+    timestamp,
+    timestamp_iso: raw.timestamp_iso,
+    status,
+    is_ok: isOk,
+    exchange,
+    symbol,
+    stage,
+    period: Number(raw.period) || undefined,
+    hostname,
+    interface: iface,
+    type,
+    detail: raw.detail,
+    results: normalizedResults,
+    results_count: Number(raw.results_count) || normalizedResults.length,
+    failed_symbols: failedSymbols,
+    failed_count: Number(raw.failed_count) || failedSymbols.length,
+    failed_requests: failedRequests,
+    failed_request_count:
+      Number(raw.failed_request_count) || failedRequests.length,
+    mode: raw.mode,
+  };
+
+  resolveIntegrityStream(event);
+  return event;
 }
 
 function initChart() {
@@ -376,8 +601,9 @@ function initChart() {
                 }
                 parts.push(isOk ? 'OK' : '异常');
                 let message = `${datasetLabel}: ${parts.join(' ')}`;
-                if (raw.detail) {
-                  message += ` · ${raw.detail}`;
+                const extraSegments = buildIntegrityDetailSegments(raw);
+                if (extraSegments.length) {
+                  message += ` · ${extraSegments.join(' · ')}`;
                 }
                 return message;
               }
@@ -520,125 +746,76 @@ async function fetchBucketsPayload() {
   return res.json();
 }
 
-function formatIntegrityOption(meta) {
-  const hostLabel = meta.hostname || '未知主机';
-  const ifaceLabel = meta.interface ? ` · ${meta.interface}` : '';
-  const typeLabel = meta.types && meta.types.length ? ` (${meta.types.map(getIntegrityTypeLabel).join(', ')})` : '';
-  return `${hostLabel}${ifaceLabel}${typeLabel}`;
-}
-
-function populateIntegritySelect(keys) {
+function populateIntegritySelect() {
   if (!integritySelectEl) {
     return;
   }
   integritySelectEl.innerHTML = '';
-  integrityKeyMeta.clear();
-  integrityToggleInputs.clear();
-  integrityKeys = keys || [];
-
-  if (!integrityKeys.length) {
-    const option = document.createElement('option');
-    option.value = '';
-    option.textContent = '无可用数据';
-    integritySelectEl.appendChild(option);
-    integritySelectEl.disabled = true;
-    integritySelectedKey = null;
-    integrityActiveTypes.clear();
-    rebuildIntegrityToggles();
-    return;
-  }
-
-  for (const item of integrityKeys) {
-    const meta = {
-      key: item.key,
-      hostname: item.hostname || '',
-      interface: item.interface || '',
-      types: Array.isArray(item.types) ? item.types.filter((t) => t) : [],
-    };
-    integrityKeyMeta.set(meta.key, meta);
-    const option = document.createElement('option');
-    option.value = meta.key;
-    option.textContent = formatIntegrityOption(meta);
-    integritySelectEl.appendChild(option);
-  }
-
-  const hasSelected = integritySelectedKey && integrityKeyMeta.has(integritySelectedKey);
-  if (!hasSelected) {
-    integritySelectedKey = integrityKeys[0].key;
-  }
-
-  integritySelectEl.value = integritySelectedKey || '';
-  integritySelectEl.disabled = false;
-  rebuildIntegrityToggles();
+  const option = document.createElement('option');
+  option.value = '';
+  option.textContent = '全部流';
+  integritySelectEl.appendChild(option);
+  integritySelectEl.disabled = true;
 }
 
-function rebuildIntegrityToggles() {
+function renderIntegrityStreamToggles() {
   if (!integrityTogglesEl) {
     return;
   }
   integrityTogglesEl.innerHTML = '';
   integrityToggleInputs.clear();
-  const meta = integritySelectedKey ? integrityKeyMeta.get(integritySelectedKey) : null;
-  const types = meta && Array.isArray(meta.types) && meta.types.length ? [...meta.types] : [];
 
-  if (!types.length) {
-    integrityActiveTypes.clear();
-    return;
-  }
+  ensureStreamVisibility();
 
-  const visibleTypes = [];
-  const hiddenTypes = [];
-  for (const type of types) {
-    if (INTEGRITY_TOGGLE_VISIBLE_TYPES.has(type)) {
-      visibleTypes.push(type);
-    } else {
-      hiddenTypes.push(type);
+  const entries = Array.from(integrityStreamMeta.entries()).map(([key, meta]) => ({
+    key,
+    meta,
+  }));
+  entries.sort((a, b) => {
+    const aType = String(a.meta.type || '');
+    const bType = String(b.meta.type || '');
+    if (aType === 'trade' && bType !== 'trade') {
+      return -1;
     }
-  }
-  visibleTypes.sort((a, b) => a.localeCompare(b));
-  const previousSelection = new Set(integrityActiveTypes);
-  integrityActiveTypes.clear();
+    if (aType !== 'trade' && bType === 'trade') {
+      return 1;
+    }
+    return (a.meta.label || a.key).localeCompare(b.meta.label || b.key, 'zh-CN');
+  });
 
-  hiddenTypes.forEach((type) => integrityActiveTypes.add(type));
-
-  let initialTypes = visibleTypes.filter((type) => previousSelection.has(type));
-  if (!initialTypes.length && visibleTypes.length) {
-    initialTypes = [...visibleTypes];
-  }
-  initialTypes.forEach((type) => integrityActiveTypes.add(type));
-
-  if (!visibleTypes.length) {
-    integrityToggleInputs.clear();
+  if (!entries.length) {
     return;
   }
 
-  for (const type of visibleTypes) {
+  for (const { key, meta } of entries) {
     const label = document.createElement('label');
     label.className = 'integrity-toggle';
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
-    checkbox.value = type;
-    const shouldCheck = initialTypes.includes(type);
+    checkbox.value = key;
+    const shouldCheck = integrityStreamVisibility.get(key) ?? false;
     checkbox.checked = shouldCheck;
-    if (shouldCheck) {
-      integrityActiveTypes.add(type);
-    }
     checkbox.addEventListener('change', () => {
-      if (checkbox.checked) {
-        integrityActiveTypes.add(type);
-      } else {
-        if (integrityActiveTypes.size <= 1) {
-          checkbox.checked = true;
-          return;
-        }
-        integrityActiveTypes.delete(type);
+      integrityStreamVisibility.set(key, checkbox.checked);
+      if (!latestBuckets.length) {
+        return;
       }
-      refreshData().catch((error) => console.error('刷新完整性数据失败', error));
+      renderBuckets(latestBuckets, latestBucketMeta, latestIntegrityEvents);
+      renderIntegrityEvents(latestIntegrityEvents);
     });
-    integrityToggleInputs.set(type, checkbox);
+    integrityToggleInputs.set(key, checkbox);
 
     const span = document.createElement('span');
-    span.textContent = getIntegrityTypeLabel(type);
+    const labelParts = [];
+    if (meta.label) {
+      labelParts.push(meta.label);
+    } else {
+      labelParts.push(describeStreamLabel(key));
+    }
+    if (meta.type && meta.type !== 'trade') {
+      labelParts.push(getIntegrityTypeLabel(meta.type));
+    }
+    span.textContent = labelParts.join(' · ');
 
     label.appendChild(checkbox);
     label.appendChild(span);
@@ -646,93 +823,13 @@ function rebuildIntegrityToggles() {
   }
 }
 
-async function loadIntegrityMeta() {
-  try {
-    const params = new URLSearchParams({ limit: '1', meta: '1' });
-    const res = await fetch(`/api/integrity?${params.toString()}`);
-    if (!res.ok) {
-      console.error('获取完整性元数据失败', await res.text());
-      return;
-    }
-    const payload = await res.json();
-    integrityKeys = payload.meta?.keys || [];
-    populateIntegritySelect(integrityKeys);
-  } catch (error) {
-    console.error('loadIntegrityMeta error', error);
+async function fetchIntegrityData(limit = 200) {
+  const params = new URLSearchParams({ limit: String(limit), meta: '1' });
+  const res = await fetch(`/api/integrity?${params.toString()}`);
+  if (!res.ok) {
+    throw new Error(await res.text());
   }
-}
-
-async function fetchIntegritySeriesForType(type) {
-  if (!integritySelectedKey) {
-    return [];
-  }
-  try {
-    const targetMeta = integrityKeyMeta.get(integritySelectedKey);
-    if (!targetMeta) {
-      return [];
-    }
-    const params = new URLSearchParams({ limit: '180', type });
-
-    if (targetMeta?.hostname) {
-      params.set('hostname', targetMeta.hostname);
-    }
-    if (targetMeta?.interface) {
-      params.set('interface', targetMeta.interface);
-    }
-
-    const res = await fetch(`/api/integrity?${params.toString()}`);
-    if (!res.ok) {
-      console.error('获取完整性数据失败', await res.text());
-      return [];
-    }
-    const payload = await res.json();
-    return (payload.data || []).map((item) => {
-      const rawBatchItems = Array.isArray(item.trade_batch_items) ? item.trade_batch_items : [];
-      const tradeBatchItems = rawBatchItems
-        .map((child) => {
-          if (!child) {
-            return null;
-          }
-          const timestampValue = Number(child.timestamp);
-          const normalizedTimestamp = Number.isFinite(timestampValue) && timestampValue > 0 ? timestampValue : 0;
-          return {
-            symbol: child.symbol || '',
-            status: String(child.status || '').toLowerCase(),
-            detail: child.detail,
-            minute: Number(child.minute) || 0,
-            timestamp: normalizedTimestamp,
-            timestamp_iso:
-              child.timestamp_iso
-              || (normalizedTimestamp ? new Date(normalizedTimestamp * 1000).toISOString() : null),
-          };
-        })
-        .filter(Boolean);
-      const record = {
-        timestamp: Number(item.timestamp) || 0,
-        timestamp_iso: item.timestamp_iso,
-        status: String(item.status || '').toLowerCase(),
-        detail: item.detail,
-        is_ok: item.is_ok ?? String(item.status || '').toLowerCase() === 'ok',
-        exchange: item.exchange,
-        symbol: item.symbol,
-        minute: item.minute,
-        hostname: item.hostname || targetMeta?.hostname || '',
-        interface: item.interface || targetMeta?.interface || '',
-        type: item.type || type,
-        trade_batch: Boolean(item.trade_batch),
-        trade_batch_size: Number(item.trade_batch_size) || tradeBatchItems.length,
-        trade_batch_failures:
-          Number(item.trade_batch_failures)
-          || tradeBatchItems.reduce((acc, child) => (child.status === 'ok' ? acc : acc + 1), 0),
-        trade_batch_items: tradeBatchItems,
-      };
-      resolveIntegrityStream(record);
-      return record;
-    });
-  } catch (error) {
-    console.error('fetchIntegritySeries error', error);
-    return [];
-  }
+  return res.json();
 }
 
 function pickNumber(value) {
@@ -783,7 +880,8 @@ function getIntegrityTooltipFooterLines(bucketIndex) {
   if (!entries.length) {
     return [];
   }
-  const incLines = [];
+  const defaultLines = [];
+  const restLines = [];
   const tradeLines = [];
   for (const [streamKey, event] of entries) {
     const stream = resolveIntegrityStream(event);
@@ -792,40 +890,28 @@ function getIntegrityTooltipFooterLines(bucketIndex) {
     }
     const ok = event.is_ok ?? event.isOk ?? String(event.status || '').toLowerCase() === 'ok';
     const timeLabel = event.timestamp ? formatTimeOfDay(event.timestamp) : '未知时间';
-    if (isTradeCategory(stream.category) && event.trade_batch) {
-      const baseLabel = formatIntegrityStatusLabel(event, stream, { includeSymbol: false });
-      const items = Array.isArray(event.trade_batch_items) ? event.trade_batch_items : [];
-      const failingItems = items.filter(
-        (item) => String(item?.status || '').toLowerCase() !== 'ok',
-      );
-      if (!failingItems.length) {
-        const detailText = event.detail ? ` · ${event.detail}` : '';
-        tradeLines.push(`${baseLabel}: ${timeLabel} 正常${detailText}`);
-      } else {
-        failingItems.forEach((item) => {
-          const symbolLabel = item?.symbol || '未指定合约';
-          const itemTime = Number(item?.timestamp) ? formatTimeOfDay(Number(item.timestamp)) : timeLabel;
-          const detailSuffix = item?.detail ? ` · ${item.detail}` : '';
-          tradeLines.push(`${baseLabel} ${symbolLabel}: ${itemTime} 异常${detailSuffix}`);
-        });
-      }
-      continue;
-    }
     const label = formatIntegrityStatusLabel(event, stream, { includeSymbol: true });
     const statusLabel = ok ? '正常' : '异常';
     let line = `${label}: ${timeLabel} ${statusLabel}`;
-    if (!ok && event.detail) {
+    const extraSegments = buildIntegrityDetailSegments(event);
+    if (!ok && extraSegments.length) {
+      line += ` · ${extraSegments.join(' · ')}`;
+    } else if (!ok && !extraSegments.length && event.detail) {
       line += ` · ${event.detail}`;
     }
+
     if (isTradeCategory(stream.category)) {
       tradeLines.push(line);
+    } else if (typeof stream.category === 'string' && stream.category.startsWith('rest/')) {
+      restLines.push(line);
     } else {
-      incLines.push(line);
+      defaultLines.push(line);
     }
   }
-  incLines.sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  defaultLines.sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  restLines.sort((a, b) => a.localeCompare(b, 'zh-CN'));
   tradeLines.sort((a, b) => a.localeCompare(b, 'zh-CN'));
-  const lines = [...incLines];
+  const lines = [...defaultLines, ...restLines];
   if (tradeLines.length > TRADE_TOOLTIP_LIMIT) {
     lines.push(...tradeLines.slice(0, TRADE_TOOLTIP_LIMIT));
     lines.push(`… 其余 ${tradeLines.length - TRADE_TOOLTIP_LIMIT} 个交易流`);
@@ -836,6 +922,7 @@ function getIntegrityTooltipFooterLines(bucketIndex) {
 }
 
 function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
+  ensureStreamVisibility();
   bucketRanges = buckets.map((bucket) => ({
     startTs: bucket.start_ts,
     endTs: bucket.end_ts,
@@ -851,7 +938,6 @@ function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
   const avgValues = rawAvgValues.map((value) => value / UNIT_SCALE);
   const markFlags = rawMaxValues.map((value) => alertThresholdBps > 0 && value >= alertThresholdBps);
   const singlePoint = pointCount <= 1;
-  const selectedMeta = integritySelectedKey ? integrityKeyMeta.get(integritySelectedKey) : null;
 
   function locateBucketIndex(timestamp) {
     if (!bucketRanges.length || timestamp === undefined || timestamp === null) {
@@ -900,23 +986,9 @@ function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
             seriesLength: Object.values(meta.raw_series || {}).map((series) => series.length),
           }
         : null,
-      integrityKey: integritySelectedKey,
       integrityPoints: integrityEvents.length,
-      integrityStreams: (() => {
-        const unique = new Set();
-        for (const event of integrityEvents) {
-          const streamKey = event.stream_key || resolveIntegrityStream(event)?.key;
-          if (streamKey) {
-            unique.add(streamKey);
-          }
-        }
-        return unique.size;
-      })(),
-      integrityTypes: Array.from(integrityActiveTypes),
-      integrityHost: selectedMeta ? {
-        hostname: selectedMeta.hostname,
-        interface: selectedMeta.interface,
-      } : null,
+      integrityStreamCount: integrityStreamMeta.size,
+      integrityVisibleStreams: Array.from(integrityStreamVisibility.entries()),
     };
     console.debug('[XDP] renderBuckets 调试', debugSnapshot);
     if (debugInfoEl) {
@@ -994,14 +1066,14 @@ function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
     if (!stream) {
       continue;
     }
-    const isTrade = isTradeCategory(stream.category);
     const isOk = event.is_ok ?? event.isOk ?? String(event.status || '').toLowerCase() === 'ok';
     const eventType = event.type || '';
-    const yValue = isTrade ? getIntegrityYPosition(stream.category, isOk, stream.key) : 1;
+    const yValue = getIntegrityYPosition(stream.category, isOk, stream.key);
+    const streamKey = stream.key;
 
-    let entry = overlayByStream.get(stream.key);
-    if (!entry && isTrade) {
-      const baseColor = getIntegrityStreamColor(stream.key);
+    let entry = overlayByStream.get(streamKey);
+    if (!entry) {
+      const baseColor = getIntegrityStreamColor(streamKey);
       entry = {
         stream,
         baseColor,
@@ -1014,10 +1086,10 @@ function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
         borderWidths: [],
         styles: [],
       };
-      overlayByStream.set(stream.key, entry);
+      overlayByStream.set(streamKey, entry);
     }
-    if (!entry) {
-      // 非 trade 类型只用于 tooltip 统计，不绘制散点
+    const streamVisible = integrityStreamVisibility.get(streamKey) ?? false;
+    if (!streamVisible && isOk) {
       continue;
     }
     const pointColor = isOk ? entry.baseColor : INTEGRITY_FAIL_COLOR;
@@ -1034,9 +1106,15 @@ function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
       hostname: event.hostname,
       interface: event.interface,
       type: eventType,
-      stream_key: stream.key,
+      stage: event.stage,
+      stream_key: streamKey,
       stream_label: stream.label,
       stream_category: stream.category,
+      results: event.results,
+      results_count: event.results_count,
+      failed_symbols: event.failed_symbols,
+      failed_requests: event.failed_requests,
+      failed_request_count: event.failed_request_count,
     });
     entry.colors.push(pointColor);
     entry.borderColors.push(pointColor);
@@ -1068,7 +1146,7 @@ function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
     dataset.borderColor = entry.baseColor;
     dataset.data = sortedPoints;
     dataset.hidden = sortedPoints.length === 0;
-    dataset.order = 20;
+    dataset.order = String(entry.stream.category || '').startsWith(TRADE_CATEGORY_PREFIX) ? 20 : 25;
     dataset.xdpIntegrity = {
       streamKey: entry.stream.key,
       streamLabel: entry.stream.label,
@@ -1081,6 +1159,7 @@ function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
       colors: entry.colors.slice(),
       borderColors: entry.borderColors.slice(),
       baseColor: entry.baseColor,
+      visible: integrityStreamVisibility.get(entry.stream.key) ?? false,
     };
     dataset.pointRadius = (ctx) => {
       const arr = ctx.dataset.xdpIntegrity?.radii;
@@ -1197,14 +1276,10 @@ function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
   }
 }
 
-function renderIntegrityEvents(eventsByType) {
+function renderIntegrityEvents(events) {
   const streams = new Map();
-  const selectedMeta = integritySelectedKey ? integrityKeyMeta.get(integritySelectedKey) : null;
 
-  eventsByType.forEach((events) => {
-    if (!Array.isArray(events)) {
-      return;
-    }
+  if (Array.isArray(events)) {
     for (const event of events) {
       const stream = resolveIntegrityStream(event);
       if (!stream) {
@@ -1217,7 +1292,7 @@ function renderIntegrityEvents(eventsByType) {
       }
       entry.events.push(event);
     }
-  });
+  }
 
   streams.forEach((entry) => {
     entry.events.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
@@ -1266,17 +1341,12 @@ function renderIntegrityEvents(eventsByType) {
       );
       const summaryParts = summaryItems.map((item) => `${item.label}: ${item.ok ? '正常' : '异常'}`);
       const overallOk = summaryItems.every((item) => item.ok);
-      const prefix = selectedMeta
-        ? `${selectedMeta.hostname || '未知主机'}${selectedMeta.interface ? ' · ' + selectedMeta.interface : ''}`
-        : '';
       if (!summaryParts.length) {
-        integritySummaryEl.textContent = prefix ? `${prefix} · 未接收完整性数据` : '未接收完整性数据';
+        integritySummaryEl.textContent = '未接收完整性数据';
         integritySummaryEl.classList.remove('ok');
         integritySummaryEl.classList.remove('bad');
       } else {
-        integritySummaryEl.textContent = prefix
-          ? `${prefix} · ${summaryParts.join(' · ')}`
-          : summaryParts.join(' · ');
+        integritySummaryEl.textContent = summaryParts.join(' · ');
         integritySummaryEl.classList.toggle('ok', overallOk);
         integritySummaryEl.classList.toggle('bad', !overallOk);
       }
@@ -1351,14 +1421,18 @@ function renderIntegrityEvents(eventsByType) {
     if (streamLabel) {
       fragments.push(streamLabel);
     }
-    if (event.hostname) {
-      fragments.push(event.hostname);
+    if (event.exchange && !streamLabel.includes(event.exchange)) {
+      fragments.push(event.exchange);
     }
-    if (event.interface) {
-      fragments.push(event.interface);
+    if (event.stage) {
+      fragments.push(event.stage);
     }
     fragments.push(ok ? 'OK' : '异常');
-    const detailText = event.detail ? ` · ${event.detail}` : '';
+    const extraSegments = !ok ? buildIntegrityDetailSegments(event) : [];
+    if (!ok && !extraSegments.length && event.detail) {
+      extraSegments.push(event.detail);
+    }
+    const detailText = extraSegments.length ? ` · ${extraSegments.join(' · ')}` : '';
     li.appendChild(document.createTextNode(` ${fragments.join(' · ')}${detailText}`));
     integrityEventsEl.appendChild(li);
   }
@@ -1370,39 +1444,85 @@ async function refreshData() {
   }
   isRefreshing = true;
   try {
-    ensureActiveTypes();
-    if (!integrityActiveTypes.size && integrityToggleInputs.size) {
-      integrityToggleInputs.forEach((input, type) => {
-        if (input) {
-          input.checked = true;
-          integrityActiveTypes.add(type);
-        }
-      });
-    }
+    const [bucketPayload, integrityPayload] = await Promise.all([fetchBucketsPayload(), fetchIntegrityData()]);
 
-    const activeTypes = Array.from(integrityActiveTypes);
-    const fetchTasks = [fetchBucketsPayload()];
-    for (const type of activeTypes) {
-      fetchTasks.push(fetchIntegritySeriesForType(type));
-    }
-    const results = await Promise.all(fetchTasks);
-    const bucketPayload = results[0];
-    const buckets = bucketPayload?.data || [];
-    const meta = bucketPayload?.meta;
-    const eventsByType = new Map();
-    activeTypes.forEach((type, idx) => {
-      const events = results[idx + 1] || [];
-      eventsByType.set(type, events);
-    });
-    const combinedEvents = [];
-    eventsByType.forEach((events, type) => {
-      for (const event of events) {
-        combinedEvents.push({ ...event, type });
+    const buckets = Array.isArray(bucketPayload?.data) ? bucketPayload.data : [];
+    const bucketMeta = bucketPayload?.meta;
+    latestBuckets = buckets;
+    latestBucketMeta = bucketMeta;
+
+    const rawIntegrityData = Array.isArray(integrityPayload?.data) ? integrityPayload.data : [];
+    const normalizedEvents = rawIntegrityData
+      .map((item) => normalizeIntegrityEvent(item))
+      .filter(Boolean)
+      .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    latestIntegrityEvents = normalizedEvents;
+
+    const nextStreamMeta = new Map();
+    normalizedEvents.forEach((event) => {
+      const key = event.stream_key || event.key;
+      if (!key) {
+        return;
+      }
+      if (!nextStreamMeta.has(key)) {
+        nextStreamMeta.set(key, {
+          key,
+          label: event.stream_label || describeStreamLabel(key),
+          type: String(event.type || '').toLowerCase(),
+          stage: event.stage || '',
+          stream: event.stream || '',
+          exchange: event.exchange || '',
+        });
       }
     });
-    combinedEvents.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-    renderBuckets(buckets, meta, combinedEvents);
-    renderIntegrityEvents(eventsByType);
+    const metaKeys = Array.isArray(integrityPayload?.meta?.keys) ? integrityPayload.meta.keys : [];
+    metaKeys.forEach((item) => {
+      if (!item || typeof item !== 'object') {
+        return;
+      }
+      const key = item.key || '';
+      if (!key || nextStreamMeta.has(key)) {
+        return;
+      }
+      const typeList = Array.isArray(item.types) ? item.types.filter((value) => value) : [];
+      const stageList = Array.isArray(item.stages) ? item.stages.filter((value) => value) : [];
+      const type = typeList.length ? String(typeList[0]).toLowerCase() : '';
+      const stage = stageList.length ? String(stageList[0]) : '';
+      const exchange = String(item.exchange || '').trim();
+      const labelParts = [];
+      if (exchange) {
+        labelParts.push(exchange);
+      }
+      if (stage) {
+        labelParts.push(stage);
+      }
+      if (type) {
+        labelParts.push(getIntegrityTypeLabel(type));
+      }
+      const fallbackLabel = labelParts.length ? labelParts.join(' · ') : key;
+      nextStreamMeta.set(key, {
+        key,
+        label: fallbackLabel,
+        type,
+        stage,
+        stream: item.stream || item.hostname || '',
+        exchange,
+      });
+    });
+    integrityStreamMeta.clear();
+    nextStreamMeta.forEach((value, key) => {
+      integrityStreamMeta.set(key, value);
+    });
+    const activeStreamKeys = new Set(nextStreamMeta.keys());
+    integrityStreamVisibility.forEach((_, key) => {
+      if (!activeStreamKeys.has(key)) {
+        integrityStreamVisibility.delete(key);
+      }
+    });
+    renderIntegrityStreamToggles();
+
+    renderBuckets(buckets, bucketMeta, normalizedEvents);
+    renderIntegrityEvents(normalizedEvents);
   } catch (error) {
     console.error('刷新仪表盘失败', error);
   } finally {
@@ -1423,19 +1543,10 @@ function startAutoRefresh() {
   }, refreshIntervalMs);
 }
 
-if (integritySelectEl) {
-  integritySelectEl.addEventListener('change', () => {
-    const value = integritySelectEl.value;
-    integritySelectedKey = value || null;
-    rebuildIntegrityToggles();
-    refreshData().catch((error) => console.error('切换完整性数据源失败', error));
-  });
-}
-
 async function bootstrap() {
   initChart();
   await loadStatus();
-  await loadIntegrityMeta();
+  populateIntegritySelect();
   await refreshData();
   startAutoRefresh();
 }
