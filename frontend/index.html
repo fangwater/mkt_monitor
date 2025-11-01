@@ -4,9 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>XDP 带宽监测面板</title>
-  <link rel="stylesheet" href="styles.css" />
-  <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
-  <script defer type="module" src="app.js"></script>
+  <link
+    rel="icon"
+    type="image/svg+xml"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23101624'/%3E%3Cpath d='M18 20h8l10 24h-8l-10-24z' fill='%234f9cf6'/%3E%3Cpath d='M38 20h8v24h-8V20z' fill='%2322c55e'/%3E%3C/svg%3E"
+  />
+  <link rel="stylesheet" href="styles.css?v=20251101-6" />
+  <script defer src="vendor/chart.umd.min.js?v=4.4.6"></script>
+  <script defer type="module" src="app.js?v=20251101-6"></script>
 </head>
 <body>
   <header>
@@ -25,30 +30,36 @@
       <canvas id="maxChart"></canvas>
     </section>
 
+    <section class="integrity-card">
+      <div class="integrity-header">
+        <h2>完整性检查</h2>
+        <div class="integrity-controls">
+          <div class="integrity-select-row">
+            <label for="integritySelect">数据源</label>
+            <select id="integritySelect" disabled>
+              <option value="">加载中...</option>
+            </select>
+          </div>
+          <div id="integrityToggles" class="integrity-toggles"></div>
+          <span id="integritySummary" class="integrity-summary">未接收完整性数据</span>
+        </div>
+      </div>
+      <ul id="integrityEvents"></ul>
+    </section>
+
+    <section class="debug-card">
+      <h2>调试信息</h2>
+      <pre id="debugInfo">等待数据...</pre>
+    </section>
+
     <section class="alerts-card">
       <h2>阈值标记窗口</h2>
       <ul id="alertList"></ul>
     </section>
-
-    <section class="table-card">
-      <h2>最近 72 小时 (3 分钟粒度)</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>标记</th>
-            <th>开始时间</th>
-            <th>结束时间</th>
-            <th>最大带宽</th>
-            <th>采样数</th>
-          </tr>
-        </thead>
-        <tbody id="bucketTable"></tbody>
-      </table>
-    </section>
   </main>
 
   <footer>
-    <p>数据来源：XDP 10ms Tick → 3 分钟窗口 max。</p>
+    <p id="sourceInfo">数据来源加载中...</p>
   </footer>
 </body>
 </html>

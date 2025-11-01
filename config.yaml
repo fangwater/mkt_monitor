@@ -5,6 +5,7 @@ server:
 retention:
   xdp_points: 72
   integrity_points: 72
+  retention_seconds: 3600
 
 xdp_streams:
   - name: primary-xdp
@@ -13,5 +14,21 @@ xdp_streams:
 
 integrity_streams:
   - name: primary-integrity_trade
-    endpoint: tcp://103.90.136.195:15555
+    endpoint: tcp://103.90.136.195:25555
     topic: integrity_trade
+    hostname: cc-jp-yf-srv-195
+    interface: ens18
+  - name: primary-integrity_inc
+    endpoint: tcp://103.90.136.195:25556
+    topic: integrity_inc
+    hostname: cc-jp-yf-srv-195
+    interface: ens18
+  - name: primary-integrity_trade-futures
+    endpoint: tcp://103.90.136.195:25556
+    topic: integrity_trade
+    hostname: cc-jp-yf-srv-195
+    interface: ens18
+
+frontend:
+  alert_threshold_bps: 250000000   # 约 250 Mbps
+  refresh_interval_ms: 5000
