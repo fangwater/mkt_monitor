@@ -6,6 +6,10 @@ const integrityEventsEl = document.getElementById('integrityEvents');
 const integrityTogglesEl = document.getElementById('integrityToggles');
 const debugMode = window.location.hash.includes('debug');
 
+if (chartCanvas) {
+  chartCanvas.addEventListener('click', handleIntegrityChartClick);
+}
+
 function abortBootstrap(message) {
   console.error(message);
   if (debugInfoEl) {
@@ -101,11 +105,15 @@ let bucketRanges = [];
 const integrityStreamMeta = new Map();
 const integrityStreamVisibility = new Map();
 const integrityToggleInputs = new Map();
+const integritySelectionDetailEl = document.getElementById('integritySelectionDetail');
 let isRefreshing = false;
 let integritySnapshotByBucket = [];
 let latestIntegrityEvents = [];
 let latestBuckets = [];
 let latestBucketMeta = null;
+let selectedIntegrityPointKey = null;
+
+renderIntegritySelectionDetail(null);
 
 function formatBps(bps) {
   const units = ['bps', 'Kbps', 'Mbps', 'Gbps', 'Tbps'];
@@ -281,6 +289,15 @@ function resolveIntegrityStream(event) {
   return { key, label, category, stage };
 }
 
+function makeIntegrityPointKey(point) {
+  if (!point) {
+    return null;
+  }
+  const streamKey = String(point.stream_key || point.streamKey || '').trim();
+  const ts = Number(point.timestamp) || 0;
+  return `${streamKey}|${ts}`;
+}
+
 function describeStreamLabel(key) {
   return integrityStreamLabels.get(key) || key;
 }
@@ -431,6 +448,89 @@ function buildIntegrityDetailSegments(event) {
     segments.push(String(detail));
   }
   return segments;
+}
+
+function renderIntegritySelectionDetail(point, dataset = null) {
+  if (!integritySelectionDetailEl) {
+    selectedIntegrityPointKey = point ? makeIntegrityPointKey(point) : null;
+    return;
+  }
+
+  if (!point) {
+    selectedIntegrityPointKey = null;
+    integritySelectionDetailEl.textContent = '点击图中的标记查看详细信息';
+    return;
+  }
+
+  const pointKey = makeIntegrityPointKey(point);
+  selectedIntegrityPointKey = pointKey;
+
+  const streamLabel = dataset?.xdpIntegrity?.streamLabel || point.stream_label || describeStreamLabel(point.stream_key) || '';
+  const status = String(point.status || '').toLowerCase();
+  const isOk = point.is_ok ?? status === 'ok';
+  const statusLabel = isOk ? '正常' : '异常';
+  const timeLabel = point.timestamp ? `${toLocal(point.timestamp)} (${formatTimeOfDay(point.timestamp)})` : '未知时间';
+  const exchangeLabel = point.exchange || '未知来源';
+  const stageLabel = point.stage || '';
+  const symbolLabel = point.symbol || ''; // may be empty for汇总
+
+  const headerParts = [];
+  if (streamLabel) {
+    headerParts.push(streamLabel);
+  }
+  if (symbolLabel) {
+    headerParts.push(symbolLabel);
+  }
+  headerParts.push(statusLabel.toUpperCase());
+
+  const detailSegments = buildIntegrityDetailSegments(point);
+
+  const lines = [];
+  lines.push(`<div><strong>${headerParts.join(' · ')}</strong></div>`);
+  lines.push(`<div>时间: ${timeLabel}</div>`);
+  lines.push(`<div>来源: ${exchangeLabel}${stageLabel ? ` · ${stageLabel}` : ''}</div>`);
+  if (point.hostname || point.interface) {
+    const hostParts = [];
+    if (point.hostname) {
+      hostParts.push(point.hostname);
+    }
+    if (point.interface) {
+      hostParts.push(point.interface);
+    }
+    lines.push(`<div>节点: ${hostParts.join(' · ')}</div>`);
+  }
+
+  if (detailSegments.length) {
+    lines.push(`<div>${detailSegments.join(' · ')}</div>`);
+  }
+
+  const requests = Array.isArray(point.results) ? point.results : [];
+  if (requests.length) {
+    const items = requests.map((item) => {
+      const itemSymbol = String(item.symbol || '').trim().toUpperCase() || '未指定';
+      const itemStatus = String(item.status || '').toLowerCase();
+      const itemStatusLabel = itemStatus === 'ok' ? 'OK' : '异常';
+      const requestList = Array.isArray(item.requests)
+        ? item.requests
+            .map((req) => {
+              if (!req || typeof req !== 'object') {
+                return null;
+              }
+              const reqName = String(req.name || req.request || '').trim() || '未命名请求';
+              const reqStatus = String(req.status || '').toLowerCase() === 'ok' ? 'OK' : '异常';
+              const reqDetail = req.detail ? ` · ${req.detail}` : '';
+              return `<li>${reqName}: ${reqStatus}${reqDetail}</li>`;
+            })
+            .filter(Boolean)
+        : [];
+      const detailSuffix = item.detail ? ` · ${item.detail}` : '';
+      const requestsHtml = requestList.length ? `<ul>${requestList.join('')}</ul>` : '';
+      return `<li><strong>${itemSymbol}</strong>: ${itemStatusLabel}${detailSuffix}${requestsHtml}</li>`;
+    });
+    lines.push(`<div>结果明细<ul>${items.join('')}</ul></div>`);
+  }
+
+  integritySelectionDetailEl.innerHTML = lines.join('');
 }
 
 function normalizeIntegrityEvent(raw, fallbackHost = '', fallbackInterface = '') {
@@ -923,6 +1023,9 @@ function getIntegrityTooltipFooterLines(bucketIndex) {
 
 function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
   ensureStreamVisibility();
+  latestBuckets = Array.isArray(buckets) ? [...buckets] : [];
+  latestBucketMeta = meta;
+  latestIntegrityEvents = Array.isArray(integrityEvents) ? [...integrityEvents] : [];
   bucketRanges = buckets.map((bucket) => ({
     startTs: bucket.start_ts,
     endTs: bucket.end_ts,
@@ -1056,6 +1159,7 @@ function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
     avgDataset.pointHitRadius = avgValues.map(() => (pointCount <= 1 ? 6 : 1));
   }
 
+  let matchedSelection = null;
   const overlayByStream = new Map();
   for (const event of integrityEvents) {
     const idx = locateBucketIndex(event.timestamp);
@@ -1093,7 +1197,7 @@ function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
       continue;
     }
     const pointColor = isOk ? entry.baseColor : INTEGRITY_FAIL_COLOR;
-    entry.points.push({
+    const pointEntry = {
       x: idx,
       y: yValue,
       timestamp: event.timestamp,
@@ -1115,13 +1219,19 @@ function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
       failed_symbols: event.failed_symbols,
       failed_requests: event.failed_requests,
       failed_request_count: event.failed_request_count,
-    });
+    };
+    pointEntry.point_key = makeIntegrityPointKey(pointEntry);
+    const isSelected = selectedIntegrityPointKey && pointEntry.point_key === selectedIntegrityPointKey;
+    if (isSelected) {
+      matchedSelection = { point: pointEntry, streamKey: streamKey };
+    }
+    entry.points.push(pointEntry);
     entry.colors.push(pointColor);
     entry.borderColors.push(pointColor);
-    entry.radii.push(isOk ? 5 : 7);
-    entry.hoverRadii.push(isOk ? 7 : 9);
-    entry.hitRadii.push(isOk ? 9 : 11);
-    entry.borderWidths.push(isOk ? 1 : 2);
+    entry.radii.push(isSelected ? 10 : isOk ? 5 : 7);
+    entry.hoverRadii.push(isSelected ? 12 : isOk ? 7 : 9);
+    entry.hitRadii.push(isSelected ? 14 : isOk ? 9 : 11);
+    entry.borderWidths.push(isSelected ? 2 : isOk ? 1 : 2);
     entry.styles.push(isOk ? getIntegrityPointStyle(eventType) : 'triangle');
   }
 
@@ -1129,9 +1239,7 @@ function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
 
   const integrityDatasets = [];
   overlayByStream.forEach((entry) => {
-    const sortedPoints = entry.points
-      .slice()
-      .sort((a, b) => (a.x === b.x ? (a.timestamp || 0) - (b.timestamp || 0) : a.x - b.x));
+    const sortedPoints = entry.points.slice();
     const dataset =
       existingIntegrityDatasets.get(entry.stream.key) || {
         type: 'scatter',
@@ -1160,7 +1268,11 @@ function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
       borderColors: entry.borderColors.slice(),
       baseColor: entry.baseColor,
       visible: integrityStreamVisibility.get(entry.stream.key) ?? false,
+      pointKeys: sortedPoints.map((pt) => pt.point_key || makeIntegrityPointKey(pt)),
     };
+    if (matchedSelection && matchedSelection.streamKey === entry.stream.key) {
+      matchedSelection.dataset = dataset;
+    }
     dataset.pointRadius = (ctx) => {
       const arr = ctx.dataset.xdpIntegrity?.radii;
       if (Array.isArray(arr) && ctx.dataIndex < arr.length) {
@@ -1212,6 +1324,17 @@ function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
     };
     integrityDatasets.push(dataset);
   });
+
+  if (selectedIntegrityPointKey) {
+    if (matchedSelection && matchedSelection.dataset) {
+      renderIntegritySelectionDetail(matchedSelection.point, matchedSelection.dataset);
+    } else {
+      renderIntegritySelectionDetail(null);
+    }
+  } else {
+    renderIntegritySelectionDetail(null);
+  }
+
   integrityDatasets.sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'));
 
   if (thresholdDataset) {
@@ -1436,6 +1559,35 @@ function renderIntegrityEvents(events) {
     li.appendChild(document.createTextNode(` ${fragments.join(' · ')}${detailText}`));
     integrityEventsEl.appendChild(li);
   }
+}
+
+function handleIntegrityChartClick(evt) {
+  if (!maxChart) {
+    return;
+  }
+  const elements = maxChart.getElementsAtEventForMode(evt, 'nearest', { intersect: true }, false);
+  const integrityElement = elements.find((el) => {
+    const dataset = maxChart.data.datasets?.[el.datasetIndex];
+    return Boolean(dataset?.xdpIntegrity);
+  });
+  if (!integrityElement) {
+    if (selectedIntegrityPointKey) {
+      selectedIntegrityPointKey = null;
+      renderIntegritySelectionDetail(null);
+      renderBuckets(latestBuckets, latestBucketMeta, latestIntegrityEvents);
+    }
+    return;
+  }
+  const dataset = maxChart.data.datasets?.[integrityElement.datasetIndex];
+  if (!dataset?.xdpIntegrity) {
+    return;
+  }
+  const rawPoint = dataset.data?.[integrityElement.index];
+  if (!rawPoint) {
+    return;
+  }
+  renderIntegritySelectionDetail(rawPoint, dataset);
+  renderBuckets(latestBuckets, latestBucketMeta, latestIntegrityEvents);
 }
 
 async function refreshData() {

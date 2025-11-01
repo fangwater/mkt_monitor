@@ -32,13 +32,13 @@ integrity_streams:
     interface: ens18
     retention_points: 4320       # 1 分钟一条，保留 72 小时
   - name: primary-rest_summary-1m
-    endpoint: tcp://103.90.136.195:25557
+    endpoint: tcp://103.90.136.195:25556
     topic: rest_summary
     hostname: cc-jp-yf-srv-195
     interface: ens18
     retention_points: 4320       # 1 分钟一条，保留 72 小时
   - name: primary-rest_summary-5m
-    endpoint: tcp://103.90.136.195:25557
+    endpoint: tcp://103.90.136.195:25556
     topic: rest_summary_5m
     hostname: cc-jp-yf-srv-195
     interface: ens18
