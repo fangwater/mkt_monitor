@@ -157,7 +157,6 @@ def _create_dashboard_app(
     store = MetricStore(
         xdp_points=cfg.retention.xdp_points,
         integrity_points=cfg.retention.integrity_points,
-        retention_seconds=cfg.retention.retention_seconds,
     )
     for stream_cfg in cfg.integrity_streams:
         store.set_integrity_retention(stream_cfg.name, stream_cfg.retention_points)

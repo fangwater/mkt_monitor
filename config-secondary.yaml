@@ -5,7 +5,6 @@ server:
 retention:
   xdp_points: 51840           # 5s 间隔，72 小时
   integrity_points: 4320      # 默认 1 分钟间隔，72 小时
-  retention_seconds: 0        # 关闭按时间裁剪，依赖条数控制
 
 xdp_streams:
   - name: secondary-xdp

@@ -17,15 +17,12 @@ class ServerSettings:
 class RetentionSettings:
     xdp_points: int = 72
     integrity_points: int = 72
-    retention_seconds: int = 3600
 
     def __post_init__(self) -> None:
         if self.xdp_points <= 0:
             raise ValueError("xdp_points 必须为正整数")
         if self.integrity_points <= 0:
             raise ValueError("integrity_points 必须为正整数")
-        if self.retention_seconds <= 0:
-            raise ValueError("retention_seconds 必须为正整数")
 
 
 @dataclass(frozen=True)
@@ -164,7 +161,6 @@ def load_config(path: str | pathlib.Path) -> AppConfig:
     retention = RetentionSettings(
         xdp_points=int(retention_cfg.get("xdp_points", 72)),
         integrity_points=int(retention_cfg.get("integrity_points", 72)),
-        retention_seconds=int(retention_cfg.get("retention_seconds", 3600) or 3600),
     )
 
     frontend = FrontendSettings(

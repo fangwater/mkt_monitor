@@ -56,13 +56,8 @@ src/          XDP 带宽采集相关工具脚本与配置
 生产环境可以使用 [pm2](https://pm2.keymetrics.io/) 来管理 uvicorn 进程：
 
 ```bash
-# 进入仓库根目录
-cd /home/ubuntu/mkt_monitor
-
 # 启动并命名进程
-pm2 start "python -m uvicorn backend.app:app --host 0.0.0.0 --port 12345 --log-level info" \
-  --name mkt-monitor \
-  --cwd /home/ubuntu/mkt_monitor
+pm2 start "python3 -m uvicorn backend.app:app --host 0.0.0.0 --port 12345 --log-level info" --name mkt-monitor 
 
 # 查看状态与日志
 pm2 status

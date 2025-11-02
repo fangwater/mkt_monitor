@@ -48,14 +48,13 @@ class MetricStore:
         *,
         xdp_points: int,
         integrity_points: int,
-        retention_seconds: int,
     ) -> None:
         self._xdp_points = xdp_points
         self._integrity_points = max(integrity_points, 1)
-        self._retention_seconds = retention_seconds
         self._lock = threading.Lock()
         self._xdp_series: Dict[str, Deque[Dict[str, Any]]] = defaultdict(deque)
         self._integrity_series: Dict[str, Deque[Dict[str, Any]]] = defaultdict(deque)
+        self._xdp_stream_counts: Dict[str, int] = defaultdict(int)
         self._integrity_retention: Dict[str, int] = {}
         self._alerts: Deque[Dict[str, Any]] = deque(maxlen=max(self._integrity_points, 128))
 
@@ -78,20 +77,9 @@ class MetricStore:
     def _integrity_retention_limit(self, stream: str) -> int:
         return self._integrity_retention.get(stream, self._integrity_points)
 
-    def _prune_deque(self, series: Deque[Dict[str, Any]], cutoff: float) -> None:
-        while series and _as_float(series[0].get("timestamp"), default=0.0) < cutoff:
-            series.popleft()
-
     def _prune_locked(self, reference_ts: Optional[float] = None) -> None:
-        if self._retention_seconds <= 0:
-            return
-        now = reference_ts if reference_ts is not None else time.time()
-        cutoff = now - self._retention_seconds
-        for key in list(self._xdp_series.keys()):
-            series = self._xdp_series[key]
-            self._prune_deque(series, cutoff)
-            if not series:
-                del self._xdp_series[key]
+        """保留接口以兼容旧逻辑，当前仅依赖条数控制，不做时间裁剪。"""
+        return
 
     # xdp ------------------------------------------------------------------
     def add_xdp_payload(self, payload: Dict[str, Any], *, source: str | None = None) -> Tuple[str, Dict[str, Any]]:
@@ -138,12 +126,25 @@ class MetricStore:
             series = self._xdp_series[key]
             is_new_key = len(series) == 0
             series.append(entry)
+            stream_name = str(source or "default")
+            self._xdp_stream_counts[stream_name] += 1
             while len(series) > self._xdp_points:
-                series.popleft()
+                removed = series.popleft()
+                removed_source = str(removed.get("source") or "default")
+                current = self._xdp_stream_counts.get(removed_source, 0)
+                if current <= 1:
+                    self._xdp_stream_counts.pop(removed_source, None)
+                else:
+                    self._xdp_stream_counts[removed_source] = current - 1
             self._prune_locked(reference_ts=timestamp)
+            counts_snapshot = dict(self._xdp_stream_counts)
+            limit = self._xdp_points
 
         if is_new_key:
             log.info("首次收到 XDP 数据: key=%s host=%s iface=%s", key, host, iface)
+
+        for stream_id, count in sorted(counts_snapshot.items()):
+            log.info("XDP 缓存状态: stream=%s count=%d limit=%d", stream_id, count, limit)
 
         return key, entry
 
