@@ -160,6 +160,8 @@ def _create_dashboard_app(
     )
     for stream_cfg in cfg.integrity_streams:
         store.set_integrity_retention(stream_cfg.name, stream_cfg.retention_points)
+    max_integrity_retention = store.integrity_max_retention()
+    default_integrity_limit = store.integrity_default_limit()
     hub = WebsocketHub()
 
     app = FastAPI(title="Market Integrity Monitor", version="1.0.0")
@@ -177,6 +179,8 @@ def _create_dashboard_app(
     app.state.hub = hub
     app.state.loop = None
     app.state.subscribers: List[ZMQSubscriber] = []
+    app.state.integrity_default_limit = default_integrity_limit
+    app.state.integrity_max_retention = max_integrity_retention
 
     logging.getLogger("backend").info(
         "启动仪表盘: name=%s config=%s",
@@ -316,6 +320,8 @@ def _create_dashboard_app(
             "alert_threshold_bps": cfg.frontend.alert_threshold_bps,
             "refresh_interval_ms": cfg.frontend.refresh_interval_ms,
             "dashboard": app.state.dashboard,
+            "integrity_default_limit": app.state.integrity_default_limit,
+            "integrity_max_retention": app.state.integrity_max_retention,
         }
 
         return JSONResponse({"config": config_payload, "last_error": None})
@@ -351,9 +357,12 @@ def _create_dashboard_app(
             alias="type",
             description="事件类型过滤，例如 trade/inc_seq",
         ),
-        limit: int = Query(180, ge=1, le=2000, description="返回的最大记录条数"),
+        limit: Optional[int] = Query(None, ge=1, le=max_integrity_retention, description="返回的最大记录条数"),
         meta: bool = Query(False, description="是否附带可选 key 列表"),
     ) -> JSONResponse:
+        effective_limit = int(limit or app.state.integrity_default_limit)
+        if effective_limit > app.state.integrity_max_retention:
+            effective_limit = app.state.integrity_max_retention
         data = store.integrity_series(
             exchange=exchange,
             symbol=symbol,
@@ -361,7 +370,7 @@ def _create_dashboard_app(
             interface=interface,
             type_filter=event_type,
             stage=stage,
-            limit=limit,
+            limit=effective_limit,
         )
         payload: Dict[str, Any] = {"data": data, "dashboard": app.state.dashboard}
         if meta:

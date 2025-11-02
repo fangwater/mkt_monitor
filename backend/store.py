@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import math
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Any, Deque, Dict, List, Optional, Tuple
@@ -73,6 +74,18 @@ class MetricStore:
                 self._integrity_retention.pop(stream, None)
             else:
                 self._integrity_retention[stream] = value
+
+    def integrity_max_retention(self) -> int:
+        with self._lock:
+            limits = [self._integrity_points]
+            limits.extend(self._integrity_retention.values())
+            max_retention = max(limits) if limits else self._integrity_points
+        return max(max_retention, 1)
+
+    def integrity_default_limit(self) -> int:
+        max_retention = self.integrity_max_retention()
+        limit = int(math.ceil(max_retention / 3.0))
+        return max(limit, 1)
 
     def _integrity_retention_limit(self, stream: str) -> int:
         return self._integrity_retention.get(stream, self._integrity_points)
@@ -453,8 +466,30 @@ class MetricStore:
                     records.append(record)
 
         records.sort(key=lambda item: float(item.get("timestamp") or 0.0))
-        if limit and limit > 0 and len(records) > limit:
-            records = records[-limit:]
+        if limit and limit > 0:
+            ok_kept = 0
+            selected: List[Dict[str, Any]] = []
+
+            def is_ok(record: Dict[str, Any]) -> bool:
+                if "is_ok" in record and record["is_ok"] is not None:
+                    return bool(record["is_ok"])
+                status = str(record.get("status") or "").lower()
+                if status:
+                    return status == "ok"
+                failed_count = int(record.get("failed_count") or 0)
+                failed_req_count = int(record.get("failed_request_count") or 0)
+                return failed_count == 0 and failed_req_count == 0
+
+            for record in reversed(records):
+                if not is_ok(record):
+                    selected.append(record)
+                    continue
+                if ok_kept >= limit:
+                    continue
+                selected.append(record)
+                ok_kept += 1
+            selected.reverse()
+            records = selected
         return records
 
     def latest_xdp_entry(self) -> Optional[Dict[str, Any]]:

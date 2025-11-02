@@ -103,6 +103,7 @@ let maxChart;
 let alertThresholdBps = 0;
 let windowSeconds = 0;
 const UNIT_SCALE = 1_000_000; // 将 bps 转换为 Mbps 以便图表展示
+let integrityLimit = null;
 let bucketRanges = [];
 const integrityStreamMeta = new Map();
 const integrityStreamVisibility = new Map();
@@ -882,6 +883,12 @@ async function loadStatus() {
   if (thresholdEl) {
     thresholdEl.textContent = formatThresholdText(alertThresholdBps);
   }
+  const nextIntegrityLimit = Number(cfg.integrity_default_limit);
+  if (Number.isFinite(nextIntegrityLimit) && nextIntegrityLimit > 0) {
+    integrityLimit = Math.round(nextIntegrityLimit);
+  } else {
+    integrityLimit = null;
+  }
   const sourceEl = document.getElementById('sourceInfo');
   if (sourceEl) {
     const tickLabel = cfg.tick_ms ? `${Number(cfg.tick_ms).toFixed(0)}ms` : '未知';
@@ -988,8 +995,14 @@ function renderIntegrityStreamToggles() {
   }
 }
 
-async function fetchIntegrityData(limit = 200) {
-  const params = new URLSearchParams({ limit: String(limit), meta: '1' });
+async function fetchIntegrityData(limit) {
+  const params = new URLSearchParams({ meta: '1' });
+  const candidateLimit = Number(limit);
+  if (Number.isFinite(candidateLimit) && candidateLimit > 0) {
+    params.set('limit', String(Math.round(candidateLimit)));
+  } else if (Number.isFinite(integrityLimit) && integrityLimit > 0) {
+    params.set('limit', String(integrityLimit));
+  }
   const res = await fetch(`api/integrity?${params.toString()}`);
   if (!res.ok) {
     throw new Error(await res.text());
