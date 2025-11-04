@@ -49,5 +49,5 @@ integrity_streams:
     query_limit: 12             # 默认返回最近 12 小时（5 分钟步长）
 
 frontend:
-  alert_threshold_bps: 250000000   # 约 250 Mbps
+  alert_threshold_bps: 400000000   # 约 250 Mbps
   refresh_interval_ms: 5000
