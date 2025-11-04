@@ -4,9 +4,21 @@ const integritySelectEl = document.getElementById('integritySelect');
 const integritySummaryEl = document.getElementById('integritySummary');
 const integrityEventsEl = document.getElementById('integrityEvents');
 const integrityTogglesEl = document.getElementById('integrityToggles');
+const openHistoryWindowBtn = document.getElementById('openHistoryWindow');
+const historyQueryPanelEl = document.getElementById('historyQueryPanel');
+const historyBannerEl = document.getElementById('historyBanner');
+const queryWindowFormEl = document.getElementById('queryWindowForm');
+const queryStartInputEl = document.getElementById('queryStart');
+const queryEndInputEl = document.getElementById('queryEnd');
+const queryResetBtnEl = document.getElementById('queryReset');
+const queryWindowStatusEl = document.getElementById('queryWindowStatus');
 const debugMode = window.location.hash.includes('debug');
 const pathSegments = window.location.pathname.split('/').filter(Boolean);
 const currentDashboardSlug = pathSegments.length > 0 ? pathSegments[0] : '';
+const searchParams = new URLSearchParams(window.location.search);
+const historyMode = searchParams.get('history') === '1';
+const initialQueryStartParam = Number(searchParams.get('start_ts') || searchParams.get('start'));
+const initialQueryEndParam = Number(searchParams.get('end_ts') || searchParams.get('end'));
 
 if (chartCanvas) {
   chartCanvas.addEventListener('click', handleIntegrityChartClick);
@@ -115,8 +127,9 @@ let latestIntegrityEvents = [];
 let latestBuckets = [];
 let latestBucketMeta = null;
 let selectedIntegrityPointKey = null;
-
-renderIntegritySelectionDetail(null);
+let queryWindow = null;
+let pendingQueryRefresh = false;
+const HISTORY_DEFAULT_WINDOW_SECONDS = 3600;
 
 function formatBps(bps) {
   const units = ['bps', 'Kbps', 'Mbps', 'Gbps', 'Tbps'];
@@ -571,6 +584,245 @@ function renderIntegritySelectionDetail(point, dataset = null) {
   integritySelectionDetailEl.innerHTML = lines.join('');
 }
 
+function parseDateTimeInput(value) {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  const ts = date.getTime();
+  if (Number.isNaN(ts)) {
+    return null;
+  }
+  return ts / 1000;
+}
+
+function formatDateTimeLocal(ts) {
+  if (!Number.isFinite(ts)) {
+    return '';
+  }
+  const date = new Date(ts * 1000);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hour = String(date.getHours()).padStart(2, '0');
+  const minute = String(date.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hour}:${minute}`;
+}
+
+function setQueryWindowStatus(message, { active = false } = {}) {
+  if (!queryWindowStatusEl) {
+    return;
+  }
+  if (!historyMode) {
+    queryWindowStatusEl.textContent = '';
+    queryWindowStatusEl.classList.remove('active');
+    return;
+  }
+  queryWindowStatusEl.textContent = message;
+  queryWindowStatusEl.classList.toggle('active', Boolean(active));
+}
+
+function updateQueryWindowStatus() {
+  if (!queryWindowStatusEl) {
+    return;
+  }
+  if (!historyMode) {
+    setQueryWindowStatus('', { active: false });
+    return;
+  }
+  const { startTs, endTs } = queryWindow;
+  const startLabel = Number.isFinite(startTs) ? toLocal(startTs) : '未知';
+  const endLabel = Number.isFinite(endTs) ? toLocal(endTs) : '当前';
+  const label = `历史窗口（暂停自动刷新）: ${startLabel} → ${endLabel}`;
+  setQueryWindowStatus(label, { active: true });
+}
+
+function defaultQueryWindow() {
+  const endTs = Math.floor(Date.now() / 1000);
+  const startTs = endTs - HISTORY_DEFAULT_WINDOW_SECONDS;
+  return { startTs, endTs };
+}
+
+function applyQueryWindow(windowSpec) {
+  if (!historyMode) {
+    return;
+  }
+  const resolvedWindow = windowSpec && typeof windowSpec === 'object' ? windowSpec : defaultQueryWindow();
+  queryWindow = resolvedWindow;
+  stopAutoRefresh();
+  updateQueryWindowStatus();
+  syncHistoryUrl(queryWindow);
+  if (isRefreshing) {
+    pendingQueryRefresh = true;
+    return;
+  }
+  pendingQueryRefresh = false;
+  refreshData().catch((error) => console.error('查询窗口刷新失败', error));
+}
+
+function clearQueryWindow() {
+  if (!historyMode) {
+    return;
+  }
+  const fallback = defaultQueryWindow();
+  if (queryStartInputEl) {
+    queryStartInputEl.value = formatDateTimeLocal(fallback.startTs);
+  }
+  if (queryEndInputEl) {
+    queryEndInputEl.value = formatDateTimeLocal(fallback.endTs);
+  }
+  applyQueryWindow(fallback);
+}
+
+function handleQueryWindowSubmit(event) {
+  event.preventDefault();
+  if (!historyMode) {
+    return;
+  }
+  if (!queryStartInputEl || !queryEndInputEl) {
+    return;
+  }
+  const startValue = queryStartInputEl.value;
+  const endValue = queryEndInputEl.value;
+  if (!startValue || !endValue) {
+    setQueryWindowStatus('请填写完整的开始和结束时间后再查询。', { active: true });
+    return;
+  }
+  const startTs = parseDateTimeInput(startValue);
+  const endTs = parseDateTimeInput(endValue);
+  if (!Number.isFinite(startTs) || !Number.isFinite(endTs)) {
+    setQueryWindowStatus('时间格式无效，请重新输入。', { active: true });
+    return;
+  }
+  let rangeStart = startTs;
+  let rangeEnd = endTs;
+  if (rangeStart > rangeEnd) {
+    const tmp = rangeStart;
+    rangeStart = rangeEnd;
+    rangeEnd = tmp;
+  }
+  if (queryStartInputEl) {
+    queryStartInputEl.value = formatDateTimeLocal(rangeStart);
+  }
+  if (queryEndInputEl) {
+    queryEndInputEl.value = formatDateTimeLocal(rangeEnd);
+  }
+  applyQueryWindow({
+    startTs: rangeStart,
+    endTs: rangeEnd,
+  });
+}
+
+if (historyMode && queryWindowFormEl) {
+  queryWindowFormEl.addEventListener('submit', handleQueryWindowSubmit);
+}
+
+if (historyMode && queryResetBtnEl) {
+  queryResetBtnEl.addEventListener('click', () => {
+    clearQueryWindow();
+  });
+}
+
+if (historyMode) {
+  if (historyQueryPanelEl) {
+    historyQueryPanelEl.classList.add('active');
+  }
+  if (historyBannerEl) {
+    historyBannerEl.style.display = '';
+  }
+  if (queryWindowStatusEl) {
+    queryWindowStatusEl.style.display = '';
+  }
+  if (openHistoryWindowBtn) {
+    openHistoryWindowBtn.style.display = 'none';
+  }
+  let initialWindow;
+  const hasStartParam = Number.isFinite(initialQueryStartParam);
+  const hasEndParam = Number.isFinite(initialQueryEndParam);
+  if (hasStartParam || hasEndParam) {
+    let startTs = hasStartParam ? Number(initialQueryStartParam) : null;
+    let endTs = hasEndParam ? Number(initialQueryEndParam) : Math.floor(Date.now() / 1000);
+    if (!hasStartParam && endTs !== null) {
+      startTs = endTs - HISTORY_DEFAULT_WINDOW_SECONDS;
+    }
+    if (startTs === null) {
+      startTs = Math.floor(Date.now() / 1000) - HISTORY_DEFAULT_WINDOW_SECONDS;
+    }
+    if (startTs > endTs) {
+      const tmp = startTs;
+      startTs = endTs;
+      endTs = tmp;
+    }
+    initialWindow = { startTs, endTs };
+  } else {
+    initialWindow = defaultQueryWindow();
+  }
+  queryWindow = initialWindow;
+  if (queryStartInputEl) {
+    queryStartInputEl.value = formatDateTimeLocal(initialWindow.startTs);
+  }
+  if (queryEndInputEl) {
+    queryEndInputEl.value = formatDateTimeLocal(initialWindow.endTs);
+  }
+  syncHistoryUrl(queryWindow);
+} else {
+  if (historyQueryPanelEl) {
+    historyQueryPanelEl.classList.remove('active');
+  }
+  if (historyBannerEl) {
+    historyBannerEl.style.display = 'none';
+  }
+  if (queryWindowStatusEl) {
+    queryWindowStatusEl.style.display = 'none';
+  }
+  if (openHistoryWindowBtn) {
+    openHistoryWindowBtn.addEventListener('click', () => {
+      const url = new URL(window.location.href);
+      url.searchParams.set('history', '1');
+      url.searchParams.delete('start_ts');
+      url.searchParams.delete('end_ts');
+      window.open(url.toString(), '_blank', 'noopener,noreferrer');
+    });
+  }
+}
+
+renderIntegritySelectionDetail(null);
+updateQueryWindowStatus();
+
+function appendQueryWindowParams(params) {
+  if (!historyMode || !queryWindow || !params) {
+    return;
+  }
+  const { startTs, endTs } = queryWindow;
+  if (Number.isFinite(startTs)) {
+    params.set('start_ts', String(Math.floor(startTs)));
+  }
+  if (Number.isFinite(endTs)) {
+    params.set('end_ts', String(Math.ceil(endTs)));
+  }
+}
+
+function syncHistoryUrl(windowSpec) {
+  if (!historyMode) {
+    return;
+  }
+  const url = new URL(window.location.href);
+  if (windowSpec && Number.isFinite(windowSpec.startTs)) {
+    url.searchParams.set('start_ts', String(Math.floor(windowSpec.startTs)));
+  } else {
+    url.searchParams.delete('start_ts');
+  }
+  if (windowSpec && Number.isFinite(windowSpec.endTs)) {
+    url.searchParams.set('end_ts', String(Math.ceil(windowSpec.endTs)));
+  } else {
+    url.searchParams.delete('end_ts');
+  }
+  url.searchParams.set('history', '1');
+  const searchString = url.searchParams.toString();
+  const relativePath = `${url.pathname}${searchString ? `?${searchString}` : ''}${url.hash}`;
+  window.history.replaceState({}, '', relativePath);
+}
+
 function normalizeIntegrityEvent(raw, fallbackHost = '', fallbackInterface = '') {
   if (!raw || typeof raw !== 'object') {
     return null;
@@ -909,7 +1161,13 @@ async function loadStatus() {
 }
 
 async function fetchBucketsPayload() {
-  const endpoint = debugMode ? 'api/buckets?debug=1' : 'api/buckets';
+  const params = new URLSearchParams();
+  if (debugMode) {
+    params.set('debug', '1');
+  }
+  appendQueryWindowParams(params);
+  const queryString = params.toString();
+  const endpoint = queryString ? `api/buckets?${queryString}` : 'api/buckets';
   const res = await fetch(endpoint);
   if (!res.ok) {
     console.error('获取数据失败', await res.text());
@@ -1003,6 +1261,7 @@ async function fetchIntegrityData(limit) {
   } else if (Number.isFinite(integrityLimit) && integrityLimit > 0) {
     params.set('limit', String(integrityLimit));
   }
+  appendQueryWindowParams(params);
   const res = await fetch(`api/integrity?${params.toString()}`);
   if (!res.ok) {
     throw new Error(await res.text());
@@ -1782,15 +2041,24 @@ async function refreshData() {
     console.error('刷新仪表盘失败', error);
   } finally {
     isRefreshing = false;
+    if (pendingQueryRefresh) {
+      pendingQueryRefresh = false;
+      refreshData().catch((error) => console.error('延迟刷新失败', error));
+    }
   }
 }
 
 let refreshTimerId = null;
-function startAutoRefresh() {
+function stopAutoRefresh() {
   if (refreshTimerId) {
     clearInterval(refreshTimerId);
+    refreshTimerId = null;
   }
-  if (refreshIntervalMs <= 0) {
+}
+
+function startAutoRefresh() {
+  stopAutoRefresh();
+  if (refreshIntervalMs <= 0 || historyMode || queryWindow) {
     return;
   }
   refreshTimerId = setInterval(() => {
@@ -1803,7 +2071,9 @@ async function bootstrap() {
   await loadStatus();
   populateIntegritySelect();
   await refreshData();
-  startAutoRefresh();
+  if (!historyMode) {
+    startAutoRefresh();
+  }
 }
 
 bootstrap().catch((err) => {

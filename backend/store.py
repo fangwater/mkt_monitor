@@ -57,6 +57,7 @@ class MetricStore:
         self._integrity_series: Dict[str, Deque[Dict[str, Any]]] = defaultdict(deque)
         self._xdp_stream_counts: Dict[str, int] = defaultdict(int)
         self._integrity_retention: Dict[str, int] = {}
+        self._integrity_query_limits: Dict[str, int] = {}
         self._alerts: Deque[Dict[str, Any]] = deque(maxlen=max(self._integrity_points, 128))
 
     def set_integrity_retention(self, stream: str, points: Optional[int]) -> None:
@@ -75,6 +76,22 @@ class MetricStore:
             else:
                 self._integrity_retention[stream] = value
 
+    def set_integrity_query_limit(self, stream: str, limit: Optional[int]) -> None:
+        value: Optional[int] = None
+        if limit is not None:
+            try:
+                candidate = int(limit)
+            except (TypeError, ValueError):
+                candidate = None
+            else:
+                if candidate > 0:
+                    value = candidate
+        with self._lock:
+            if value is None:
+                self._integrity_query_limits.pop(stream, None)
+            else:
+                self._integrity_query_limits[stream] = value
+
     def integrity_max_retention(self) -> int:
         with self._lock:
             limits = [self._integrity_points]
@@ -85,7 +102,14 @@ class MetricStore:
     def integrity_default_limit(self) -> int:
         max_retention = self.integrity_max_retention()
         limit = int(math.ceil(max_retention / 3.0))
+        with self._lock:
+            if self._integrity_query_limits:
+                limit = max(limit, max(self._integrity_query_limits.values()))
         return max(limit, 1)
+
+    def integrity_query_limits(self) -> Dict[str, int]:
+        with self._lock:
+            return dict(self._integrity_query_limits)
 
     def _integrity_retention_limit(self, stream: str) -> int:
         return self._integrity_retention.get(stream, self._integrity_points)
@@ -430,16 +454,26 @@ class MetricStore:
         type_filter: Optional[str] = None,
         stage: Optional[str] = None,
         limit: Optional[int] = None,
+        start_ts: Optional[float] = None,
+        end_ts: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         records: List[Dict[str, Any]] = []
+        query_limits: Dict[str, int] = {}
         with self._lock:
             self._prune_locked()
+            if self._integrity_query_limits:
+                query_limits = dict(self._integrity_query_limits)
             for key, series in self._integrity_series.items():
                 for point in series:
                     ex = str(point.get("exchange") or "")
                     sym = str(point.get("symbol") or "")
                     host = str(point.get("hostname") or "")
                     iface = str(point.get("interface") or "")
+                    ts = float(point.get("timestamp") or 0.0)
+                    if start_ts is not None and ts < start_ts:
+                        continue
+                    if end_ts is not None and ts > end_ts:
+                        continue
                     if exchange and ex != exchange:
                         continue
                     if symbol and sym != symbol:
@@ -466,8 +500,12 @@ class MetricStore:
                     records.append(record)
 
         records.sort(key=lambda item: float(item.get("timestamp") or 0.0))
-        if limit and limit > 0:
+        has_global_limit = bool(limit and limit > 0)
+        has_stream_limits = bool(query_limits)
+        if has_global_limit or has_stream_limits:
+            global_limit = int(limit) if has_global_limit else None
             ok_kept = 0
+            ok_kept_by_stream: Dict[str, int] = {}
             selected: List[Dict[str, Any]] = []
 
             def is_ok(record: Dict[str, Any]) -> bool:
@@ -484,10 +522,19 @@ class MetricStore:
                 if not is_ok(record):
                     selected.append(record)
                     continue
-                if ok_kept >= limit:
+                stream_name = str(record.get("stream") or "")
+                stream_limit = query_limits.get(stream_name) if stream_name else None
+                if global_limit is not None and ok_kept >= global_limit:
                     continue
+                if stream_limit is not None:
+                    kept_for_stream = ok_kept_by_stream.get(stream_name, 0)
+                    if kept_for_stream >= stream_limit:
+                        continue
                 selected.append(record)
-                ok_kept += 1
+                if global_limit is not None:
+                    ok_kept += 1
+                if stream_limit is not None:
+                    ok_kept_by_stream[stream_name] = ok_kept_by_stream.get(stream_name, 0) + 1
             selected.reverse()
             records = selected
         return records
@@ -512,17 +559,27 @@ class MetricStore:
             return None
         return {"key": latest_key, "entry": latest_point}
 
-    def xdp_buckets(self) -> List[Dict[str, Any]]:
+    def xdp_buckets(
+        self,
+        *,
+        start_ts: Optional[float] = None,
+        end_ts: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
         """将所有 XDP 样本转换为桶视图，兼容旧版前端。"""
         buckets: List[Dict[str, Any]] = []
         with self._lock:
             for key, series in self._xdp_series.items():
                 for point in series:
                     window = point.get("window") or {}
-                    start_ts = float(window.get("start") or point.get("timestamp") or 0.0)
+                    bucket_start = float(window.get("start") or point.get("timestamp") or 0.0)
                     duration = float(window.get("duration") or 0.0)
-                    end_ts = float(window.get("end") or (start_ts + duration))
-                    window_duration = duration if duration > 0 else max(end_ts - start_ts, 0.0)
+                    bucket_end = float(window.get("end") or (bucket_start + duration))
+                    window_duration = duration if duration > 0 else max(bucket_end - bucket_start, 0.0)
+
+                    if start_ts is not None and bucket_end < start_ts:
+                        continue
+                    if end_ts is not None and bucket_start > end_ts:
+                        continue
 
                     avg_bps = 0.0
                     avg_source: Optional[str] = None
@@ -551,7 +608,7 @@ class MetricStore:
                                 "根据 bytes_total 回推 avg_bps: host=%s iface=%s start_ts=%.3f duration=%.3f bytes=%s avg_bps=%.2f",
                                 point.get("hostname"),
                                 point.get("interface"),
-                                start_ts,
+                                bucket_start,
                                 window_duration,
                                 bytes_total,
                                 avg_bps,
@@ -578,8 +635,8 @@ class MetricStore:
 
                     buckets.append(
                         {
-                            "start_ts": start_ts,
-                            "end_ts": end_ts,
+                            "start_ts": bucket_start,
+                            "end_ts": bucket_end,
                             "max_bps": max_bps,
                             "avg_bps": avg_bps,
                             "bps_max": max_bps,
@@ -590,5 +647,5 @@ class MetricStore:
                         }
                     )
 
-        buckets.sort(key=lambda item: item["start_ts"])
+        buckets.sort(key=lambda item: float(item.get("start_ts") or 0.0))
         return buckets

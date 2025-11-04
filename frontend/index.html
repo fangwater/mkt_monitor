@@ -40,6 +40,21 @@
               <option value="">加载中...</option>
             </select>
           </div>
+          <div class="integrity-actions">
+            <button type="button" id="openHistoryWindow">打开历史查询窗口</button>
+          </div>
+          <div id="historyQueryPanel" class="history-query-panel">
+            <div class="history-banner" id="historyBanner">历史模式（暂停自动刷新）</div>
+            <form id="queryWindowForm" class="integrity-query-row">
+              <label for="queryStart">窗口开始</label>
+              <input type="datetime-local" id="queryStart" name="queryStart" />
+              <label for="queryEnd">窗口结束</label>
+              <input type="datetime-local" id="queryEnd" name="queryEnd" />
+              <button type="submit">查询</button>
+              <button type="button" id="queryReset">恢复默认</button>
+            </form>
+            <div id="queryWindowStatus" class="integrity-query-status"></div>
+          </div>
           <div id="integrityToggles" class="integrity-toggles"></div>
           <div id="integritySelectionDetail" class="integrity-selection-detail"></div>
           <span id="integritySummary" class="integrity-summary">未接收完整性数据</span>

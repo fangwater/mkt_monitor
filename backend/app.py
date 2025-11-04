@@ -160,6 +160,7 @@ def _create_dashboard_app(
     )
     for stream_cfg in cfg.integrity_streams:
         store.set_integrity_retention(stream_cfg.name, stream_cfg.retention_points)
+        store.set_integrity_query_limit(stream_cfg.name, stream_cfg.query_limit)
     max_integrity_retention = store.integrity_max_retention()
     default_integrity_limit = store.integrity_default_limit()
     hub = WebsocketHub()
@@ -322,6 +323,7 @@ def _create_dashboard_app(
             "dashboard": app.state.dashboard,
             "integrity_default_limit": app.state.integrity_default_limit,
             "integrity_max_retention": app.state.integrity_max_retention,
+            "integrity_query_limits": store.integrity_query_limits(),
         }
 
         return JSONResponse({"config": config_payload, "last_error": None})
@@ -337,8 +339,26 @@ def _create_dashboard_app(
         return JSONResponse({"alerts": store.alerts(), "dashboard": app.state.dashboard})
 
     @app.get("/api/buckets")
-    async def get_buckets(debug: bool = Query(False, description="返回额外调试信息")) -> JSONResponse:
-        data = store.xdp_buckets()
+    async def get_buckets(
+        debug: bool = Query(False, description="返回额外调试信息"),
+        start_ts: Optional[float] = Query(
+            None,
+            description="过滤开始时间（Unix 秒）",
+        ),
+        end_ts: Optional[float] = Query(
+            None,
+            description="过滤结束时间（Unix 秒）",
+        ),
+    ) -> JSONResponse:
+        range_start = start_ts
+        range_end = end_ts
+        if (
+            range_start is not None
+            and range_end is not None
+            and range_start > range_end
+        ):
+            range_start, range_end = range_end, range_start
+        data = store.xdp_buckets(start_ts=range_start, end_ts=range_end)
         payload: Dict[str, Any] = {"data": data, "dashboard": app.state.dashboard}
         if debug:
             snapshot = store.xdp_snapshot()
@@ -359,10 +379,26 @@ def _create_dashboard_app(
         ),
         limit: Optional[int] = Query(None, ge=1, le=max_integrity_retention, description="返回的最大记录条数"),
         meta: bool = Query(False, description="是否附带可选 key 列表"),
+        start_ts: Optional[float] = Query(
+            None,
+            description="过滤开始时间（Unix 秒）",
+        ),
+        end_ts: Optional[float] = Query(
+            None,
+            description="过滤结束时间（Unix 秒）",
+        ),
     ) -> JSONResponse:
         effective_limit = int(limit or app.state.integrity_default_limit)
         if effective_limit > app.state.integrity_max_retention:
             effective_limit = app.state.integrity_max_retention
+        range_start = start_ts
+        range_end = end_ts
+        if (
+            range_start is not None
+            and range_end is not None
+            and range_start > range_end
+        ):
+            range_start, range_end = range_end, range_start
         data = store.integrity_series(
             exchange=exchange,
             symbol=symbol,
@@ -371,6 +407,8 @@ def _create_dashboard_app(
             type_filter=event_type,
             stage=stage,
             limit=effective_limit,
+            start_ts=range_start,
+            end_ts=range_end,
         )
         payload: Dict[str, Any] = {"data": data, "dashboard": app.state.dashboard}
         if meta:

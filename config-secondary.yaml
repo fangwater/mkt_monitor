@@ -18,30 +18,35 @@ integrity_streams:
     hostname: cc-jp-yf-srv-195
     interface: ens18
     retention_points: 4320       # 1 分钟一条，保留 72 小时
+    query_limit: 60             # 默认返回最近 12 小时
   - name: secondary-integrity_inc
     endpoint: tcp://103.90.136.195:25556
     topic: integrity_inc
     hostname: cc-jp-yf-srv-195
     interface: ens18
     retention_points: 86400      # 3 秒一条，保留 72 小时
+    query_limit: 60            # 默认返回最近 1 小时
   - name: secondary-integrity_trade-futures
     endpoint: tcp://103.90.136.195:25556
     topic: integrity_trade
     hostname: cc-jp-yf-srv-195
     interface: ens18
     retention_points: 4320       # 1 分钟一条，保留 72 小时
+    query_limit: 60             # 默认返回最近 12 小时
   - name: secondary-rest_summary-1m
     endpoint: tcp://103.90.136.195:25556
     topic: rest_summary
     hostname: cc-jp-yf-srv-195
     interface: ens18
     retention_points: 4320       # 1 分钟一条，保留 72 小时
+    query_limit: 60             # 默认返回最近 12 小时
   - name: secondary-rest_summary-5m
     endpoint: tcp://103.90.136.195:25556
     topic: rest_summary_5m
     hostname: cc-jp-yf-srv-195
     interface: ens18
     retention_points: 864        # 5 分钟一条，保留 72 小时
+    query_limit: 12             # 默认返回最近 12 小时（5 分钟步长）
 
 frontend:
   alert_threshold_bps: 250000000   # 约 250 Mbps

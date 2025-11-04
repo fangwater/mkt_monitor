@@ -33,6 +33,7 @@ class ZMQStreamConfig:
     hostname: str | None = None
     interface: str | None = None
     retention_points: int | None = None
+    query_limit: int | None = None
 
     def __post_init__(self) -> None:
         if not self.endpoint:
@@ -49,6 +50,13 @@ class ZMQStreamConfig:
             object.__setattr__(self, "retention_points", points)
         else:
             object.__setattr__(self, "retention_points", None)
+        if self.query_limit is not None:
+            limit = int(self.query_limit)
+            if limit <= 0:
+                raise ValueError(f"{self.name} 的 query_limit 必须为正整数")
+            object.__setattr__(self, "query_limit", limit)
+        else:
+            object.__setattr__(self, "query_limit", None)
 
 
 @dataclass(frozen=True)
@@ -118,6 +126,14 @@ def _parse_streams(items: Iterable[Dict[str, Any]], *, fallback_topic: str) -> T
                 raise ValueError(f"{name} 的 retention_points 必须是整数") from exc
             if retention_points <= 0:
                 raise ValueError(f"{name} 的 retention_points 必须为正整数")
+        query_limit = raw_item.get("query_limit")
+        if query_limit is not None:
+            try:
+                query_limit = int(query_limit)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{name} 的 query_limit 必须是整数") from exc
+            if query_limit <= 0:
+                raise ValueError(f"{name} 的 query_limit 必须为正整数")
         streams.append(
             ZMQStreamConfig(
                 name=name,
@@ -126,6 +142,7 @@ def _parse_streams(items: Iterable[Dict[str, Any]], *, fallback_topic: str) -> T
                 hostname=hostname,
                 interface=interface,
                 retention_points=retention_points,
+                query_limit=query_limit,
             )
         )
     return tuple(streams)
