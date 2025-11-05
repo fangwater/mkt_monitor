@@ -13,9 +13,13 @@ SSH_TIMEOUT=10
 # shellcheck disable=SC2034 # 作为示例保留 primary/secondary
 SERVERS=(
     # "103.90.136.194:primary"
-    "103.90.136.195:secondary"
+    # "103.90.136.195:secondary"
     # "103.90.136.196:primary"
     # "103.90.136.197:secondary"
+    "178.173.241.34:primary"
+    "178.173.241.35:secondary"
+    # "178.173.241.36:primary"
+    # "178.173.241.37:secondary"
 )
 
 user=el01

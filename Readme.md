@@ -9,6 +9,16 @@
 
 前端是一个单页应用，直接由 FastAPI 静态托管。页面会同时显示带宽折线、完整性事件列表以及关键指标摘要，支持根据流名称过滤。
 
+sudo pm2 start python3 \
+  --name xdp-monitor \
+  --log /home/el01/.pm2/logs/xdp-monitor.log \
+  --error /home/el01/.pm2/logs/xdp-monitor-error.log \
+  --output /home/el01/.pm2/logs/xdp-monitor-out.log \
+  --log-date-format "YYYY-MM-DD HH:mm:ss" \
+  --merge-logs \
+  --time \
+  -- xdp_bandwidth.py --config /home/el01/xdp_monitor/xdp_cfg.yaml
+
 ## 目录概览
 
 ```
