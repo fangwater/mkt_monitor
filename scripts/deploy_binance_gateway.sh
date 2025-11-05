@@ -19,11 +19,11 @@ ENABLE_LOCAL_NODE="${ENABLE_LOCAL_NODE:-false}"
 
 # Adjust the backend list to match the deployed proxy nodes.
 BACKENDS_DEFAULT=(
-    "192.168.1.194:9080"
-    "192.168.1.195:9080"
-    "192.168.1.196:9080"
-    "192.168.1.197:9080"
-    "192.168.1.198:9080"
+    "192.168.1.51:9080"
+    "192.168.1.52:9080"
+    "192.168.1.53:9080"
+    "192.168.1.54:9080"
+    "192.168.1.55:9080"
 )
 
 declare -a RAW_SPOT_BACKENDS=()
