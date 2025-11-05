@@ -116,6 +116,7 @@ let alertThresholdBps = 0;
 let windowSeconds = 0;
 const UNIT_SCALE = 1_000_000; // 将 bps 转换为 Mbps 以便图表展示
 let integrityLimit = null;
+let xdpLimit = null;
 let bucketRanges = [];
 const integrityStreamMeta = new Map();
 const integrityStreamVisibility = new Map();
@@ -1141,6 +1142,12 @@ async function loadStatus() {
   } else {
     integrityLimit = null;
   }
+  const nextXdpLimit = Number(cfg.xdp_default_limit);
+  if (Number.isFinite(nextXdpLimit) && nextXdpLimit > 0) {
+    xdpLimit = Math.round(nextXdpLimit);
+  } else {
+    xdpLimit = null;
+  }
   const sourceEl = document.getElementById('sourceInfo');
   if (sourceEl) {
     const tickLabel = cfg.tick_ms ? `${Number(cfg.tick_ms).toFixed(0)}ms` : '未知';
@@ -1164,6 +1171,12 @@ async function fetchBucketsPayload() {
   const params = new URLSearchParams();
   if (debugMode) {
     params.set('debug', '1');
+  }
+  if (!historyMode) {
+    const candidateLimit = Number(xdpLimit);
+    if (Number.isFinite(candidateLimit) && candidateLimit > 0) {
+      params.set('limit', String(Math.round(candidateLimit)));
+    }
   }
   appendQueryWindowParams(params);
   const queryString = params.toString();

@@ -56,6 +56,7 @@ class MetricStore:
         self._xdp_series: Dict[str, Deque[Dict[str, Any]]] = defaultdict(deque)
         self._integrity_series: Dict[str, Deque[Dict[str, Any]]] = defaultdict(deque)
         self._xdp_stream_counts: Dict[str, int] = defaultdict(int)
+        self._xdp_query_limits: Dict[str, int] = {}
         self._integrity_retention: Dict[str, int] = {}
         self._integrity_query_limits: Dict[str, int] = {}
         self._alerts: Deque[Dict[str, Any]] = deque(maxlen=max(self._integrity_points, 128))
@@ -92,6 +93,22 @@ class MetricStore:
             else:
                 self._integrity_query_limits[stream] = value
 
+    def set_xdp_query_limit(self, stream: str, limit: Optional[int]) -> None:
+        value: Optional[int] = None
+        if limit is not None:
+            try:
+                candidate = int(limit)
+            except (TypeError, ValueError):
+                candidate = None
+            else:
+                if candidate > 0:
+                    value = candidate
+        with self._lock:
+            if value is None:
+                self._xdp_query_limits.pop(stream, None)
+            else:
+                self._xdp_query_limits[stream] = value
+
     def integrity_max_retention(self) -> int:
         with self._lock:
             limits = [self._integrity_points]
@@ -104,12 +121,26 @@ class MetricStore:
         limit = int(math.ceil(max_retention / 3.0))
         with self._lock:
             if self._integrity_query_limits:
-                limit = max(limit, max(self._integrity_query_limits.values()))
+                limit = min(limit, max(self._integrity_query_limits.values()))
         return max(limit, 1)
 
     def integrity_query_limits(self) -> Dict[str, int]:
         with self._lock:
             return dict(self._integrity_query_limits)
+
+    def xdp_max_retention(self) -> int:
+        return max(self._xdp_points, 1)
+
+    def xdp_default_limit(self) -> int:
+        limit = int(math.ceil(self.xdp_max_retention() / 3.0))
+        with self._lock:
+            if self._xdp_query_limits:
+                limit = min(limit, max(self._xdp_query_limits.values()))
+        return max(limit, 1)
+
+    def xdp_query_limits(self) -> Dict[str, int]:
+        with self._lock:
+            return dict(self._xdp_query_limits)
 
     def _integrity_retention_limit(self, stream: str) -> int:
         return self._integrity_retention.get(stream, self._integrity_points)
@@ -564,10 +595,14 @@ class MetricStore:
         *,
         start_ts: Optional[float] = None,
         end_ts: Optional[float] = None,
+        limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """将所有 XDP 样本转换为桶视图，兼容旧版前端。"""
         buckets: List[Dict[str, Any]] = []
+        query_limits: Dict[str, int] = {}
         with self._lock:
+            if self._xdp_query_limits:
+                query_limits = dict(self._xdp_query_limits)
             for key, series in self._xdp_series.items():
                 for point in series:
                     window = point.get("window") or {}
@@ -644,8 +679,38 @@ class MetricStore:
                             "avg_source": avg_source,
                             "max_source": max_source,
                             "sample_count": int(point.get("samples") or 0),
+                            "hostname": str(point.get("hostname") or ""),
+                            "interface": str(point.get("interface") or ""),
+                            "stream": str(point.get("source") or ""),
                         }
                     )
 
         buckets.sort(key=lambda item: float(item.get("start_ts") or 0.0))
+        has_global_limit = bool(limit and limit > 0)
+        has_stream_limits = any(value > 0 for value in query_limits.values())
+        if has_global_limit or has_stream_limits:
+            global_limit = int(limit) if has_global_limit else None
+            kept_global = 0
+            kept_by_stream: Dict[str, int] = {}
+            selected: List[Dict[str, Any]] = []
+
+            for bucket in reversed(buckets):
+                stream_name = str(bucket.get("stream") or "")
+                stream_limit: Optional[int] = None
+                kept_for_stream = 0
+                if global_limit is not None and kept_global >= global_limit:
+                    continue
+                if has_stream_limits and stream_name:
+                    stream_limit = query_limits.get(stream_name)
+                    if stream_limit is not None:
+                        kept_for_stream = kept_by_stream.get(stream_name, 0)
+                        if kept_for_stream >= stream_limit:
+                            continue
+                selected.append(bucket)
+                if global_limit is not None:
+                    kept_global += 1
+                if stream_limit is not None:
+                    kept_by_stream[stream_name] = kept_for_stream + 1
+            selected.reverse()
+            buckets = selected
         return buckets

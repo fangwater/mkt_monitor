@@ -72,12 +72,34 @@ class AppConfig:
 class FrontendSettings:
     alert_threshold_bps: float = 0.0
     refresh_interval_ms: int = 5000
+    integrity_default_limit: int | None = None
+    xdp_default_limit: int | None = None
 
     def __post_init__(self) -> None:
         if self.alert_threshold_bps < 0:
             raise ValueError("alert_threshold_bps 不能为负")
         if self.refresh_interval_ms <= 0:
             raise ValueError("refresh_interval_ms 必须为正整数")
+        if self.integrity_default_limit is not None:
+            try:
+                limit = int(self.integrity_default_limit)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("integrity_default_limit 必须是整数") from exc
+            if limit <= 0:
+                raise ValueError("integrity_default_limit 必须为正整数")
+            object.__setattr__(self, "integrity_default_limit", limit)
+        else:
+            object.__setattr__(self, "integrity_default_limit", None)
+        if self.xdp_default_limit is not None:
+            try:
+                limit = int(self.xdp_default_limit)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("xdp_default_limit 必须是整数") from exc
+            if limit <= 0:
+                raise ValueError("xdp_default_limit 必须为正整数")
+            object.__setattr__(self, "xdp_default_limit", limit)
+        else:
+            object.__setattr__(self, "xdp_default_limit", None)
 
 
 def _ensure_dict(root: Dict[str, Any], key: str) -> Dict[str, Any]:
@@ -183,6 +205,8 @@ def load_config(path: str | pathlib.Path) -> AppConfig:
     frontend = FrontendSettings(
         alert_threshold_bps=float(frontend_cfg.get("alert_threshold_bps", 0.0) or 0.0),
         refresh_interval_ms=int(frontend_cfg.get("refresh_interval_ms", 5000) or 5000),
+        integrity_default_limit=frontend_cfg.get("integrity_default_limit"),
+        xdp_default_limit=frontend_cfg.get("xdp_default_limit"),
     )
 
     xdp_streams = _parse_streams(xdp_items, fallback_topic=fallback_xdp_topic)

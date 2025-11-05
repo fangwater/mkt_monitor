@@ -158,11 +158,21 @@ def _create_dashboard_app(
         xdp_points=cfg.retention.xdp_points,
         integrity_points=cfg.retention.integrity_points,
     )
+    for stream_cfg in cfg.xdp_streams:
+        store.set_xdp_query_limit(stream_cfg.name, stream_cfg.query_limit)
     for stream_cfg in cfg.integrity_streams:
         store.set_integrity_retention(stream_cfg.name, stream_cfg.retention_points)
         store.set_integrity_query_limit(stream_cfg.name, stream_cfg.query_limit)
+    xdp_max_retention = store.xdp_max_retention()
+    default_xdp_limit = store.xdp_default_limit()
     max_integrity_retention = store.integrity_max_retention()
     default_integrity_limit = store.integrity_default_limit()
+    frontend_integrity_limit = cfg.frontend.integrity_default_limit
+    if frontend_integrity_limit is not None and frontend_integrity_limit > 0:
+        default_integrity_limit = min(frontend_integrity_limit, max_integrity_retention)
+    frontend_xdp_limit = cfg.frontend.xdp_default_limit
+    if frontend_xdp_limit is not None and frontend_xdp_limit > 0:
+        default_xdp_limit = min(frontend_xdp_limit, xdp_max_retention)
     hub = WebsocketHub()
 
     app = FastAPI(title="Market Integrity Monitor", version="1.0.0")
@@ -182,6 +192,8 @@ def _create_dashboard_app(
     app.state.subscribers: List[ZMQSubscriber] = []
     app.state.integrity_default_limit = default_integrity_limit
     app.state.integrity_max_retention = max_integrity_retention
+    app.state.xdp_default_limit = default_xdp_limit
+    app.state.xdp_max_retention = xdp_max_retention
 
     logging.getLogger("backend").info(
         "启动仪表盘: name=%s config=%s",
@@ -324,6 +336,9 @@ def _create_dashboard_app(
             "integrity_default_limit": app.state.integrity_default_limit,
             "integrity_max_retention": app.state.integrity_max_retention,
             "integrity_query_limits": store.integrity_query_limits(),
+            "xdp_default_limit": app.state.xdp_default_limit,
+            "xdp_max_retention": app.state.xdp_max_retention,
+            "xdp_query_limits": store.xdp_query_limits(),
         }
 
         return JSONResponse({"config": config_payload, "last_error": None})
@@ -349,6 +364,11 @@ def _create_dashboard_app(
             None,
             description="过滤结束时间（Unix 秒）",
         ),
+        limit: Optional[int] = Query(
+            None,
+            ge=1,
+            description="返回的最大窗口条数",
+        ),
     ) -> JSONResponse:
         range_start = start_ts
         range_end = end_ts
@@ -358,7 +378,14 @@ def _create_dashboard_app(
             and range_start > range_end
         ):
             range_start, range_end = range_end, range_start
-        data = store.xdp_buckets(start_ts=range_start, end_ts=range_end)
+        effective_limit = limit or app.state.xdp_default_limit
+        if effective_limit is not None:
+            effective_limit = int(effective_limit)
+            if effective_limit <= 0:
+                effective_limit = None
+            elif effective_limit > app.state.xdp_max_retention:
+                effective_limit = app.state.xdp_max_retention
+        data = store.xdp_buckets(start_ts=range_start, end_ts=range_end, limit=effective_limit)
         payload: Dict[str, Any] = {"data": data, "dashboard": app.state.dashboard}
         if debug:
             snapshot = store.xdp_snapshot()
