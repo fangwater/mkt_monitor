@@ -126,6 +126,20 @@ http {
         proxy_set_header Connection "";
         proxy_set_header X-Request-ID \$request_id;
 
+        location /bapi/ {
+            proxy_pass https://www.binance.com;
+            proxy_set_header Host www.binance.com;
+            proxy_set_header X-Real-IP \$remote_addr;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Host \$host;
+            proxy_set_header X-Forwarded-Proto \$scheme;
+            proxy_ssl_server_name on;
+            proxy_ssl_name www.binance.com;
+            proxy_ssl_protocols TLSv1.2 TLSv1.3;
+            proxy_read_timeout 30s;
+            proxy_connect_timeout 5s;
+        }
+
         location / {
             proxy_pass https://data-api.binance.vision\$request_uri;
             proxy_set_header Host data-api.binance.vision;
