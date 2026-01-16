@@ -19,6 +19,12 @@ const searchParams = new URLSearchParams(window.location.search);
 const historyMode = searchParams.get('history') === '1';
 const initialQueryStartParam = Number(searchParams.get('start_ts') || searchParams.get('start'));
 const initialQueryEndParam = Number(searchParams.get('end_ts') || searchParams.get('end'));
+const dashboardPathPrefix = currentDashboardSlug ? `/${currentDashboardSlug}` : '';
+
+function apiUrl(path) {
+  const normalized = path.startsWith('/') ? path : `/${path}`;
+  return `${window.location.origin}${dashboardPathPrefix}${normalized}`;
+}
 
 if (chartCanvas) {
   chartCanvas.addEventListener('click', handleIntegrityChartClick);
@@ -131,6 +137,36 @@ let selectedIntegrityPointKey = null;
 let queryWindow = null;
 let pendingQueryRefresh = false;
 const HISTORY_DEFAULT_WINDOW_SECONDS = 3600;
+
+function computeNiceScale(values, { fallbackMax = 300, segments = 5 } = {}) {
+  const valid = Array.isArray(values)
+    ? values.filter((value) => Number.isFinite(value) && value >= 0)
+    : [];
+  if (!valid.length) {
+    const baseMax = fallbackMax > 0 ? fallbackMax : 1;
+    const step = Math.max(baseMax / segments, 1);
+    return { max: baseMax, step };
+  }
+  const rawMax = Math.max(...valid);
+  const magnitude = 10 ** Math.floor(Math.log10(Math.max(rawMax, 1)));
+  const candidates = [1, 2, 5, 10];
+  let niceMultiplier = candidates[candidates.length - 1];
+  for (const candidate of candidates) {
+    if (rawMax <= candidate * magnitude) {
+      niceMultiplier = candidate;
+      break;
+    }
+  }
+  let niceMax = niceMultiplier * magnitude;
+  if (niceMax < rawMax) {
+    niceMax = 10 * magnitude;
+  }
+  const step = Math.max(niceMax / segments, Math.min(niceMax, 1));
+  return {
+    max: Math.max(niceMax, rawMax),
+    step,
+  };
+}
 
 function formatBps(bps) {
   const units = ['bps', 'Kbps', 'Mbps', 'Gbps', 'Tbps'];
@@ -1109,7 +1145,7 @@ function initChart() {
 }
 
 async function loadStatus() {
-  const res = await fetch('api/status');
+  const res = await fetch(apiUrl('api/status'));
   const data = await res.json();
   const cfg = data.config || {};
   const cfgDashboard = !isNil(cfg.dashboard) ? cfg.dashboard : null;
@@ -1180,7 +1216,7 @@ async function fetchBucketsPayload() {
   }
   appendQueryWindowParams(params);
   const queryString = params.toString();
-  const endpoint = queryString ? `api/buckets?${queryString}` : 'api/buckets';
+  const endpoint = apiUrl(queryString ? `api/buckets?${queryString}` : 'api/buckets');
   const res = await fetch(endpoint);
   if (!res.ok) {
     console.error('获取数据失败', await res.text());
@@ -1275,7 +1311,7 @@ async function fetchIntegrityData(limit) {
     params.set('limit', String(integrityLimit));
   }
   appendQueryWindowParams(params);
-  const res = await fetch(`api/integrity?${params.toString()}`);
+  const res = await fetch(apiUrl(`api/integrity?${params.toString()}`));
   if (!res.ok) {
     throw new Error(await res.text());
   }
@@ -1731,6 +1767,26 @@ function renderBuckets(buckets, meta = undefined, integrityEvents = []) {
     }
     return '';
   };
+
+  const scaleY = maxChart.options.scales.y;
+  if (scaleY) {
+    const thresholdValue = alertThresholdBps > 0 ? alertThresholdBps / UNIT_SCALE : null;
+    const ySeries = [...values, ...avgValues];
+    if (thresholdValue !== null) {
+      ySeries.push(thresholdValue);
+    }
+    const { max: nextMax, step } = computeNiceScale(ySeries, { fallbackMax: scaleY.max || 300, segments: 5 });
+    scaleY.max = nextMax;
+    scaleY.ticks.stepSize = step;
+    scaleY.ticks.callback = (value) => {
+      const num = Number(value);
+      if (!Number.isFinite(num)) {
+        return '';
+      }
+      const digits = num >= 100 ? 0 : num >= 10 ? 1 : 2;
+      return `${num.toFixed(digits)} Mbps`;
+    };
+  }
 
   maxChart.update();
 
